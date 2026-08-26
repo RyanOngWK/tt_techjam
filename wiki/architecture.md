@@ -1,0 +1,39 @@
+# Architecture
+
+```mermaid
+flowchart LR
+    UI[React Web UI] --> API[Fastify API]
+    API --> Service[AgentService]
+    Service --> Store[JSON store]
+    Service --> Workspace[Agent workspace]
+    Service --> Runner{AgentRunner}
+    Runner -->|container| Container[Disposable Runtime container]
+    Runner -->|local process| Process[Codex child process]
+    Container --> Ark[Volcengine Ark]
+    Process --> Ark
+```
+
+## Control Plane
+
+The React client lists and configures agents, posts prompts, and polls a run
+until it finishes. The Fastify API validates request bodies, applies optional
+bearer-token protection to API routes, and serves the built client in
+production. [Web client](../apps/web/src/App.tsx) | [API routes](../apps/server/src/app.ts)
+
+`AgentService` owns lifecycle coordination. It accepts one active run per
+agent, writes metadata through `JsonStore`, delegates workspace lifecycle to
+`WorkspaceManager`, and delegates execution to an `AgentRunner` implementation.
+[Service](../apps/server/src/agent-service.ts) | [Runner factory](../apps/server/src/runner-factory.ts)
+
+## Run Flow
+
+1. The client posts a message for an agent.
+2. The service persists the user message and queued run atomically, then marks
+   the agent busy.
+3. The service invokes the configured runner with the workspace path and any
+   stored Codex thread ID.
+4. On completion, it persists output, usage, the assistant message, the next
+   thread ID, and the ready state. Failures store an error state; cancellation
+   returns the agent to ready unless it was stopped.
+
+Sources: [Service implementation](../apps/server/src/agent-service.ts) | [Domain types](../apps/server/src/types.ts)
