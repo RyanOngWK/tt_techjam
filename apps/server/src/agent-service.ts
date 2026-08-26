@@ -6,8 +6,9 @@ import {
   pruneCheckpoints,
   restoreWorkspaceCheckpoint,
 } from "./agentguard/checkpoint.js";
-import { classifyFailure, severityFor } from "./agentguard/failure-detector.js";
+import { classifyFailure, severityFor, totalTokens } from "./agentguard/failure-detector.js";
 import {
+  requiresApprovalForCrash,
   retryBackoffMs,
   selectStrategy,
   shouldAbortAfterAttempts,
@@ -16,6 +17,7 @@ import {
   abortIncident,
   completeRecoveryAttempt,
   openIncident,
+  requestApproval,
   startRecoveryAttempt,
   verifyRecovery,
 } from "./agentguard/recovery-controller.js";
@@ -26,6 +28,7 @@ import type {
   Agent,
   AgentRun,
   AgentRunner,
+  ApprovalDecision,
   Checkpoint,
   CreateAgentInput,
   Incident,
@@ -43,11 +46,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type ApprovalWaiter = {
+  resolve: (decision: ApprovalDecision) => void;
+  incidentId: string;
+};
+
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly pendingInjections = new Map<string, InjectFailType>();
   private readonly injectionCancels = new Set<string>();
+  private readonly approvalWaiters = new Map<string, ApprovalWaiter>();
 
   constructor(
     private readonly config: AppConfig,
@@ -64,14 +73,23 @@ export class AgentService {
         if (
           run.status === "queued" ||
           run.status === "running" ||
-          run.status === "recovering"
+          run.status === "recovering" ||
+          run.status === "awaiting_approval"
         ) {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
+          run.pendingApprovalIncidentId = null;
         }
         if (typeof run.recoveryAttemptCount !== "number") {
           run.recoveryAttemptCount = 0;
+        }
+        if (typeof run.tokensUsed !== "number") run.tokensUsed = 0;
+        if (typeof run.tokenBudget !== "number") {
+          run.tokenBudget = this.config.agentGuardTokenBudget;
+        }
+        if (run.pendingApprovalIncidentId === undefined) {
+          run.pendingApprovalIncidentId = null;
         }
       }
       for (const attempt of database.recoveryAttempts) {
@@ -233,6 +251,17 @@ export class AgentService {
 
   async injectFailure(runId: string, type: InjectFailType): Promise<{ ok: true }> {
     const run = this.getRun(runId);
+    if (type === "budget_exceeded") {
+      if (!["running", "recovering", "awaiting_approval"].includes(run.status)) {
+        throw new HttpError(409, "Budget injection requires an active run");
+      }
+      this.pendingInjections.set(runId, type);
+      if (run.status === "running" || run.status === "recovering") {
+        this.injectionCancels.add(run.agentId);
+        await this.runner.cancel(run.agentId);
+      }
+      return { ok: true };
+    }
     if (run.status !== "running" && run.status !== "recovering") {
       throw new HttpError(409, "Failure injection requires an active run");
     }
@@ -240,6 +269,29 @@ export class AgentService {
     this.injectionCancels.add(run.agentId);
     await this.runner.cancel(run.agentId);
     return { ok: true };
+  }
+
+  async resolveApproval(
+    runId: string,
+    decision: ApprovalDecision,
+  ): Promise<{ ok: true; decision: ApprovalDecision }> {
+    const run = this.getRun(runId);
+    if (run.status !== "awaiting_approval") {
+      throw new HttpError(409, "Run is not awaiting approval");
+    }
+    const waiter = this.approvalWaiters.get(runId);
+    if (!waiter) {
+      throw new HttpError(409, "No pending approval waiter for this run");
+    }
+    await appendTraceEvent(this.store, {
+      runId,
+      type: decision === "approve" ? "APPROVAL_GRANTED" : "APPROVAL_DENIED",
+      status: decision === "approve" ? "ok" : "error",
+      metadata: { incidentId: waiter.incidentId, decision },
+    });
+    waiter.resolve(decision);
+    this.approvalWaiters.delete(runId);
+    return { ok: true, decision };
   }
 
   async sendMessage(
@@ -263,6 +315,9 @@ export class AgentService {
       error: null,
       usage: null,
       recoveryAttemptCount: 0,
+      tokensUsed: 0,
+      tokenBudget: this.config.agentGuardTokenBudget,
+      pendingApprovalIncidentId: null,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
@@ -323,6 +378,7 @@ export class AgentService {
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
       middleware: "AgentGuard",
+      agentGuardTokenBudget: this.config.agentGuardTokenBudget,
     };
   }
 
@@ -395,18 +451,116 @@ export class AgentService {
           pendingVerifyAttemptId = null;
         }
 
+        // Accumulate usage and enforce token budget.
+        const added = totalTokens(result.usage);
+        const runAfterUsage = await this.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          if (!storedRun) return null;
+          storedRun.tokensUsed += added;
+          if (result.usage) {
+            storedRun.usage = {
+              inputTokens:
+                (storedRun.usage?.inputTokens ?? 0) + (result.usage.inputTokens ?? 0),
+              cachedInputTokens:
+                (storedRun.usage?.cachedInputTokens ?? 0) +
+                (result.usage.cachedInputTokens ?? 0),
+              outputTokens:
+                (storedRun.usage?.outputTokens ?? 0) + (result.usage.outputTokens ?? 0),
+            };
+          }
+          return structuredClone(storedRun);
+        });
+        if (
+          runAfterUsage &&
+          runAfterUsage.tokenBudget > 0 &&
+          runAfterUsage.tokensUsed > runAfterUsage.tokenBudget
+        ) {
+          await appendTraceEvent(this.store, {
+            runId: run.id,
+            type: "BUDGET_EXCEEDED",
+            status: "error",
+            metadata: {
+              tokensUsed: runAfterUsage.tokensUsed,
+              tokenBudget: runAfterUsage.tokenBudget,
+            },
+          });
+          const recovered = await this.handleFailure({
+            agent,
+            run: runAfterUsage,
+            injected: "budget_exceeded",
+            timedOut: false,
+            cancelled: false,
+            message:
+              "Token budget exceeded: " +
+              runAfterUsage.tokensUsed +
+              "/" +
+              runAfterUsage.tokenBudget,
+          });
+          if (recovered.action === "awaiting_approval") {
+            const decision = await this.waitForApproval(run.id, recovered.incidentId);
+            if (decision === "abort") {
+              await abortIncident(
+                this.store,
+                recovered.incidentId,
+                "Operator denied recovery after budget exceed",
+              );
+              await this.failRun(agent.id, run.id, "Budget exceeded; recovery denied", false);
+              return;
+            }
+            await this.raiseTokenBudget(run.id, recovered.incidentId);
+            // Budget trip after a successful turn: allow completion with raised budget.
+          } else if (recovered.action === "done") {
+            return;
+          }
+        }
+
         const injected = this.pendingInjections.get(run.id);
         if (injected) {
           this.pendingInjections.delete(run.id);
           this.injectionCancels.delete(agent.id);
           const recovered = await this.handleFailure({
             agent,
-            run,
+            run: this.getRun(run.id),
             injected,
             timedOut: injected === "tool_timeout",
             cancelled: false,
             message: "Injected " + injected,
           });
+          if (recovered.action === "awaiting_approval") {
+            const decision = await this.waitForApproval(run.id, recovered.incidentId);
+            if (decision === "abort") {
+              await abortIncident(
+                this.store,
+                recovered.incidentId,
+                "Operator denied recovery",
+              );
+              await this.failRun(agent.id, run.id, "Recovery denied by operator", false);
+              return;
+            }
+            if (recovered.failureType === "budget_exceeded") {
+              await this.raiseTokenBudget(run.id, recovered.incidentId);
+              pendingVerifyAttemptId = null;
+              agent = this.getAgent(agent.id);
+              prompt = run.prompt;
+              continue;
+            }
+            const afterApprove = await this.performApprovedRecovery({
+              agent,
+              run: this.getRun(run.id),
+              incidentId: recovered.incidentId,
+              failureType: recovered.failureType,
+            });
+            if (afterApprove.action === "retry" || afterApprove.action === "restart_resume") {
+              pendingVerifyAttemptId = afterApprove.attemptId;
+              agent = this.getAgent(agent.id);
+              prompt =
+                afterApprove.action === "retry"
+                  ? run.prompt
+                  : "Resume the previous task after a runtime interruption. Continue from the latest workspace state.";
+              continue;
+            }
+            return;
+          }
           if (recovered.action === "retry" || recovered.action === "restart_resume") {
             pendingVerifyAttemptId = recovered.attemptId;
             agent = this.getAgent(agent.id);
@@ -427,7 +581,6 @@ export class AgentService {
           if (!storedRun || !storedAgent) return;
           storedRun.status = "completed";
           storedRun.output = result.output;
-          storedRun.usage = result.usage;
           storedRun.completedAt = completedAt;
           database.messages.push({
             id: randomUUID(),
@@ -473,7 +626,6 @@ export class AgentService {
         this.pendingInjections.delete(run.id);
         this.injectionCancels.delete(agent.id);
 
-        // Ensure a checkpoint exists before crash recovery when spans already ran.
         if (
           (injected === "runtime_crash" || /exited with code|crash/i.test(message)) &&
           !this.latestCheckpoint(run.id)
@@ -484,12 +636,47 @@ export class AgentService {
 
         const recovered = await this.handleFailure({
           agent,
-          run,
+          run: this.getRun(run.id),
           injected: injected ?? null,
           timedOut,
           cancelled: false,
           message,
         });
+        if (recovered.action === "awaiting_approval") {
+          const decision = await this.waitForApproval(run.id, recovered.incidentId);
+          if (decision === "abort") {
+            await abortIncident(
+              this.store,
+              recovered.incidentId,
+              "Operator denied recovery",
+            );
+            await this.failRun(agent.id, run.id, "Recovery denied by operator", false);
+            return;
+          }
+          if (recovered.failureType === "budget_exceeded") {
+            await this.raiseTokenBudget(run.id, recovered.incidentId);
+            pendingVerifyAttemptId = null;
+            agent = this.getAgent(agent.id);
+            prompt = run.prompt;
+            continue;
+          }
+          const afterApprove = await this.performApprovedRecovery({
+            agent,
+            run: this.getRun(run.id),
+            incidentId: recovered.incidentId,
+            failureType: recovered.failureType,
+          });
+          if (afterApprove.action === "retry" || afterApprove.action === "restart_resume") {
+            pendingVerifyAttemptId = afterApprove.attemptId;
+            agent = this.getAgent(agent.id);
+            prompt =
+              afterApprove.action === "retry"
+                ? run.prompt
+                : "Resume the previous task after a runtime interruption. Continue from the latest workspace state.";
+            continue;
+          }
+          return;
+        }
         if (recovered.action === "retry" || recovered.action === "restart_resume") {
           pendingVerifyAttemptId = recovered.attemptId;
           agent = this.getAgent(agent.id);
@@ -547,6 +734,11 @@ export class AgentService {
   }): Promise<
     | { action: "done" }
     | { action: "retry" | "restart_resume"; attemptId: string; backoffMs: number }
+    | {
+        action: "awaiting_approval";
+        incidentId: string;
+        failureType: import("./types.js").FailureType;
+      }
   > {
     const errorEvent = await appendTraceEvent(this.store, {
       runId: input.run.id,
@@ -559,6 +751,7 @@ export class AgentService {
       injected: input.injected,
       timedOut: input.timedOut,
       cancelled: input.cancelled,
+      budgetExceeded: input.injected === "budget_exceeded",
       message: input.message,
     });
     const incident = await openIncident(this.store, {
@@ -574,6 +767,44 @@ export class AgentService {
       .recoveryAttempts.filter(
         (item) => item.runId === input.run.id && item.strategy === strategy,
       ).length;
+    const priorCrashRecoveries = this.store
+      .snapshot()
+      .recoveryAttempts.filter(
+        (item) =>
+          item.runId === input.run.id && item.strategy === "restart_resume",
+      ).length;
+
+    if (failureType === "budget_exceeded") {
+      await requestApproval(
+        this.store,
+        incident,
+        "Token budget exceeded; approve to raise budget or abort",
+      );
+      return {
+        action: "awaiting_approval",
+        incidentId: incident.id,
+        failureType,
+      };
+    }
+
+    if (
+      failureType === "runtime_crash" &&
+      requiresApprovalForCrash(
+        priorCrashRecoveries,
+        this.config.agentGuardRequireApprovalAfterCrashes,
+      )
+    ) {
+      await requestApproval(
+        this.store,
+        incident,
+        "Additional crash recovery requires operator approval",
+      );
+      return {
+        action: "awaiting_approval",
+        incidentId: incident.id,
+        failureType,
+      };
+    }
 
     if (strategy === "abort" || shouldAbortAfterAttempts(failureType, priorAttempts)) {
       await abortIncident(
@@ -598,65 +829,149 @@ export class AgentService {
       return { action: "done" };
     }
 
-    if (strategy === "restart_resume") {
-      const checkpoint = this.latestCheckpoint(input.run.id);
-      if (!checkpoint) {
-        await abortIncident(
-          this.store,
-          incident.id,
-          "No checkpoint available for restart_resume",
-        );
-        await this.failRun(input.agent.id, input.run.id, input.message, false);
-        return { action: "done" };
-      }
-      const attempt = await startRecoveryAttempt(this.store, { incident, strategy });
-      try {
-        await restoreWorkspaceCheckpoint({
-          workspacePath: input.agent.workspacePath,
-          checkpoint,
-        });
-        await this.store.mutate((database) => {
-          const agent = database.agents.find((item) => item.id === input.agent.id);
-          const run = database.runs.find((item) => item.id === input.run.id);
-          if (agent) {
-            agent.codexThreadId = checkpoint.codexThreadId;
-            agent.status = "busy";
-            agent.updatedAt = now();
-          }
-          if (run) run.status = "running";
-        });
-        await completeRecoveryAttempt(this.store, attempt.id, "succeeded");
-        return {
-          action: "restart_resume",
-          attemptId: attempt.id,
-          backoffMs: retryBackoffMs(priorAttempts + 1),
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await completeRecoveryAttempt(this.store, attempt.id, "failed", message);
-        await abortIncident(this.store, incident.id, message);
-        await this.failRun(input.agent.id, input.run.id, message, false);
-        return { action: "done" };
-      }
+    if (strategy === "restart_resume" || strategy === "retry") {
+      return this.startCheckpointedRecovery({
+        agent: input.agent,
+        run: input.run,
+        incident,
+        strategy,
+        priorAttempts,
+        errorEventId: errorEvent.id,
+      });
     }
 
-    // retry
-    const attempt = await startRecoveryAttempt(this.store, { incident, strategy });
+    await abortIncident(this.store, incident.id, "No recovery strategy");
+    return { action: "done" };
+  }
+
+  private async startCheckpointedRecovery(input: {
+    agent: Agent;
+    run: AgentRun;
+    incident: Incident;
+    strategy: "retry" | "restart_resume";
+    priorAttempts: number;
+    errorEventId: string;
+  }): Promise<
+    | { action: "done" }
+    | { action: "retry" | "restart_resume"; attemptId: string; backoffMs: number }
+  > {
+    const checkpoint = this.latestCheckpoint(input.run.id);
+    if (!checkpoint) {
+      await abortIncident(
+        this.store,
+        input.incident.id,
+        "No checkpoint available for " + input.strategy,
+      );
+      await this.failRun(input.agent.id, input.run.id, "No checkpoint available", false);
+      return { action: "done" };
+    }
+    const attempt = await startRecoveryAttempt(this.store, {
+      incident: input.incident,
+      strategy: input.strategy,
+      metadata: {
+        retryOf: input.errorEventId,
+        checkpointId: checkpoint.id,
+      },
+    });
+    try {
+      await restoreWorkspaceCheckpoint({
+        workspacePath: input.agent.workspacePath,
+        checkpoint,
+      });
+      await this.store.mutate((database) => {
+        const agent = database.agents.find((item) => item.id === input.agent.id);
+        const run = database.runs.find((item) => item.id === input.run.id);
+        if (agent) {
+          agent.codexThreadId = checkpoint.codexThreadId;
+          agent.status = "busy";
+          agent.updatedAt = now();
+        }
+        if (run) {
+          run.status = "running";
+          run.pendingApprovalIncidentId = null;
+        }
+      });
+      await completeRecoveryAttempt(this.store, attempt.id, "succeeded");
+      return {
+        action: input.strategy,
+        attemptId: attempt.id,
+        backoffMs: retryBackoffMs(input.priorAttempts + 1),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await completeRecoveryAttempt(this.store, attempt.id, "failed", message);
+      await abortIncident(this.store, input.incident.id, message);
+      await this.failRun(input.agent.id, input.run.id, message, false);
+      return { action: "done" };
+    }
+  }
+
+  private async performApprovedRecovery(input: {
+    agent: Agent;
+    run: AgentRun;
+    incidentId: string;
+    failureType: import("./types.js").FailureType;
+  }): Promise<
+    | { action: "done" }
+    | { action: "retry" | "restart_resume"; attemptId: string; backoffMs: number }
+  > {
+    const incident = this.store
+      .snapshot()
+      .incidents.find((item) => item.id === input.incidentId);
+    if (!incident) return { action: "done" };
+    const strategy =
+      input.failureType === "budget_exceeded"
+        ? "abort"
+        : selectStrategy(input.failureType);
+    if (strategy === "abort") {
+      await abortIncident(this.store, incident.id, "Approved path still aborts");
+      return { action: "done" };
+    }
+    const priorAttempts = this.store
+      .snapshot()
+      .recoveryAttempts.filter(
+        (item) => item.runId === input.run.id && item.strategy === strategy,
+      ).length;
+    return this.startCheckpointedRecovery({
+      agent: input.agent,
+      run: input.run,
+      incident,
+      strategy,
+      priorAttempts,
+      errorEventId: incident.eventId,
+    });
+  }
+
+  private async raiseTokenBudget(runId: string, incidentId: string): Promise<void> {
     await this.store.mutate((database) => {
-      const run = database.runs.find((item) => item.id === input.run.id);
-      const agent = database.agents.find((item) => item.id === input.agent.id);
-      if (run) run.status = "running";
-      if (agent) {
-        agent.status = "busy";
-        agent.updatedAt = now();
+      const storedRun = database.runs.find((item) => item.id === runId);
+      const incident = database.incidents.find((item) => item.id === incidentId);
+      if (storedRun) {
+        storedRun.tokenBudget =
+          storedRun.tokensUsed + this.config.agentGuardTokenBudget;
+        storedRun.pendingApprovalIncidentId = null;
+        storedRun.status = "running";
+      }
+      if (incident) {
+        incident.status = "resolved";
+        incident.resolvedAt = now();
       }
     });
-    await completeRecoveryAttempt(this.store, attempt.id, "succeeded");
-    return {
-      action: "retry",
-      attemptId: attempt.id,
-      backoffMs: retryBackoffMs(priorAttempts + 1),
-    };
+    await appendTraceEvent(this.store, {
+      runId,
+      type: "BUDGET_RAISED",
+      status: "ok",
+      metadata: { incidentId, raisedBudget: true },
+    });
+  }
+
+  private waitForApproval(
+    runId: string,
+    incidentId: string,
+  ): Promise<ApprovalDecision> {
+    return new Promise((resolve) => {
+      this.approvalWaiters.set(runId, { resolve, incidentId });
+    });
   }
 
   private latestCheckpoint(runId: string): Checkpoint | null {
@@ -681,6 +996,7 @@ export class AgentService {
         storedRun.status = cancelled ? "cancelled" : "failed";
         storedRun.error = message;
         storedRun.completedAt = completedAt;
+        storedRun.pendingApprovalIncidentId = null;
       }
       if (agent) {
         if (agent.status !== "stopped") {

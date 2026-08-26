@@ -15,6 +15,35 @@ log() {
   printf '[local-poc] %s\n' "$*" >&2
 }
 
+# Load repo .env so ARK_BASE_URL / keys match docker compose, without overriding
+# variables already set in the shell.
+load_dotenv() {
+  local env_file="$repo_dir/.env"
+  if [[ ! -f "$env_file" ]]; then
+    return 0
+  fi
+  log "Loading environment defaults from .env"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      if [[ -n "${!key+x}" ]]; then
+        continue
+      fi
+      if [[ "$value" =~ ^\".*\"$ ]]; then
+        value="${value:1:${#value}-2}"
+      elif [[ "$value" =~ ^\'.*\'$ ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+      export "$key=$value"
+    fi
+  done <"$env_file"
+}
+
+load_dotenv
+
 engine_works() {
   "$1" info >/dev/null 2>&1
 }
@@ -64,10 +93,12 @@ detect_engine() {
 }
 
 if [[ -z "${ARK_API_KEY:-}" || -z "${ARK_MODEL:-}" ]]; then
-  log "ARK_API_KEY and ARK_MODEL are required."
-  log "Example: ARK_API_KEY=key ARK_MODEL=ep-id ./scripts/start-local-poc.sh"
+  log "ARK_API_KEY and ARK_MODEL are required (set them or add them to .env)."
+  log "Example: ARK_API_KEY=key ARK_MODEL=ep-id ARK_BASE_URL=https://ark.ap-southeast.bytepluses.com/api/v3 npm run poc"
   exit 2
 fi
+
+log "Ark endpoint: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3 (default)}"
 
 command -v node >/dev/null 2>&1 || {
   log "Node.js 22+ is required to run the local control plane."

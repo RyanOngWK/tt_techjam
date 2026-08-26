@@ -128,9 +128,30 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
-  app.get("/api/runs/:id/events", async (request) => {
+  app.get("/api/runs/:id/events", async (request, reply) => {
     const { id } = runIdParams.parse(request.params);
-    return { events: service.getEvents(id) };
+    const query = z
+      .object({
+        format: z.enum(["json", "download"]).optional(),
+      })
+      .parse(request.query);
+    const events = service.getEvents(id);
+    if (query.format === "download" || query.format === "json") {
+      reply.header(
+        "Content-Disposition",
+        'attachment; filename="run-' + id + '-events.json"',
+      );
+      return reply.type("application/json").send({ runId: id, events });
+    }
+    return { events };
+  });
+
+  app.post("/api/runs/:id/approve", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    const body = z
+      .object({ decision: z.enum(["approve", "abort"]) })
+      .parse(request.body);
+    return service.resolveApproval(id, body.decision);
   });
 
   app.get("/api/runs/:id/recoveries", async (request) => {
@@ -153,7 +174,9 @@ export async function createApp(
   app.post("/api/runs/:id/fail", async (request) => {
     const { id } = runIdParams.parse(request.params);
     const body = z
-      .object({ type: z.enum(["runtime_crash", "tool_timeout"]) })
+      .object({
+        type: z.enum(["runtime_crash", "tool_timeout", "budget_exceeded"]),
+      })
       .parse(request.body);
     return service.injectFailure(id, body.type);
   });

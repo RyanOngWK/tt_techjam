@@ -3,6 +3,7 @@ export type RunStatus =
   | "queued"
   | "running"
   | "recovering"
+  | "awaiting_approval"
   | "completed"
   | "failed"
   | "cancelled";
@@ -42,6 +43,9 @@ export interface AgentRun {
     outputTokens?: number;
   } | null;
   recoveryAttemptCount?: number;
+  tokensUsed?: number;
+  tokenBudget?: number;
+  pendingApprovalIncidentId?: string | null;
   createdAt: string;
 }
 

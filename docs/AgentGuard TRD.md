@@ -236,27 +236,31 @@ Classification is rule-based (exit codes, runner timeout flags, injected fail ty
 | Method and endpoint | Purpose |
 | --- | --- |
 | `POST /api/agents/:id/messages` | Existing — create run (unchanged) |
-| `GET /api/runs/:id` | Existing — run status (include `recoveryAttemptCount`, recovering status) |
-| `GET /api/runs/:id/events` | Trace events for a run (ordered) |
+| `GET /api/runs/:id` | Existing — run status (`recoveryAttemptCount`, `tokensUsed`, `tokenBudget`, `awaiting_approval`) |
+| `GET /api/runs/:id/events` | Trace events for a run (ordered); `?format=download` for evidence export |
 | `GET /api/incidents` | List incidents (`?runId=` optional filter) |
 | `GET /api/runs/:id/recoveries` | Recovery attempts for a run |
 | `GET /api/runs/:id/checkpoints` | Checkpoint metadata for a run (optional helper) |
 | `POST /api/runs/:id/fail` | Inject controlled failure for demo/tests |
+| `POST /api/runs/:id/approve` | Operator approve / abort while `awaiting_approval` |
 
 ### Failure injection
 
 ```json
 POST /api/runs/:id/fail
-{ "type": "runtime_crash" | "tool_timeout" }
+{ "type": "runtime_crash" | "tool_timeout" | "budget_exceeded" }
 ```
 
 Behavior:
 
-- Run must be `running`.
-- Sets an in-memory injection flag consumed by `AgentService` / runner wrapper on the next step boundary.
-- `runtime_crash`: kill/abort the active runner process/container, emit crash-shaped error → detector opens `runtime_crash`.
-- `tool_timeout`: force the current or next tool span to exceed timeout → `tool_timeout`.
+- Run must be `running` or `recovering` (budget also accepted while awaiting approval for cancel race).
+- Sets an in-memory injection flag; cancels the active runner so `AgentService` classifies the failure.
+- `runtime_crash` → restart_resume from latest checkpoint (second crash may require approval).
+- `tool_timeout` → retry from latest checkpoint (shared restore path with crash).
+- `budget_exceeded` → pause for approve (raise budget + continue) or abort + ALERT.
 - Deterministic for demos; does not rely on flaky external failures.
+
+One-pager: [agentguard-architecture.md](agentguard-architecture.md).
 
 ## 10. Secret Redaction
 

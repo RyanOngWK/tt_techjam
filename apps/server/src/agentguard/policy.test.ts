@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifyFailure, severityFor } from "./failure-detector.js";
 import {
   MAX_TIMEOUT_RETRIES,
+  requiresApprovalForCrash,
   selectStrategy,
   shouldAbortAfterAttempts,
 } from "./policy.js";
@@ -27,6 +28,7 @@ describe("failure-detector", () => {
   it("assigns severities", () => {
     expect(severityFor("tool_timeout")).toBe("medium");
     expect(severityFor("runtime_crash")).toBe("high");
+    expect(severityFor("budget_exceeded")).toBe("high");
   });
 });
 
@@ -34,6 +36,7 @@ describe("policy", () => {
   it("maps failure types to strategies", () => {
     expect(selectStrategy("tool_timeout")).toBe("retry");
     expect(selectStrategy("runtime_crash")).toBe("restart_resume");
+    expect(selectStrategy("budget_exceeded")).toBe("abort");
     expect(selectStrategy("unknown")).toBe("abort");
   });
 
@@ -47,5 +50,12 @@ describe("policy", () => {
     expect(shouldAbortAfterAttempts("runtime_crash", 0)).toBe(false);
     expect(shouldAbortAfterAttempts("runtime_crash", 1)).toBe(true);
     expect(shouldAbortAfterAttempts("unknown", 0)).toBe(true);
+    expect(shouldAbortAfterAttempts("budget_exceeded", 0)).toBe(true);
+  });
+
+  it("requires approval after the configured crash count", () => {
+    expect(requiresApprovalForCrash(0, 2)).toBe(false);
+    expect(requiresApprovalForCrash(1, 2)).toBe(true);
+    expect(requiresApprovalForCrash(0, 1)).toBe(true);
   });
 });

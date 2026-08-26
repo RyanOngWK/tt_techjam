@@ -34,7 +34,7 @@ Volcengine ECS.
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
-- **AgentGuard:** run event timeline, incidents, checkpoints, simulated failure injection, and policy-driven retry / restart-resume
+- **AgentGuard:** run event timeline, incidents, checkpoints, token budget + HITL approval, simulated failure injection, and policy-driven retry / restart-resume
 
 ## AgentGuard
 
@@ -48,19 +48,21 @@ AgentGuard keeps recovery deterministic (fixed policies, not LLM-invented fixes)
 
 ### Design summary
 
-- **Trace** — persist redacted `TraceEvent`s (`runId` = trace id, `eventId` = span id)
-- **Detect** — classify `runtime_crash` / `tool_timeout` (and related types)
-- **Recover** — `retry` or `restart_resume` from workspace + `codexThreadId` checkpoints
+- **Trace** — persist redacted `TraceEvent`s (`runId` = trace id, `eventId` = span id); export via `?format=download`
+- **Detect** — classify `runtime_crash` / `tool_timeout` / `budget_exceeded`
+- **Recover** — `retry` or `restart_resume` from workspace + `codexThreadId` checkpoints (both restore)
+- **Budget / HITL** — soft token budget; second crash or budget trip can pause for Approve / Abort
 - **Verify** — emit `RECOVERY_VERIFIED` after a successful recovered turn
-- Seams: `AgentService`, `AgentRunner` `onEvent`, `/api/runs/:id/events|recoveries|checkpoints`, `/api/incidents`, `POST /api/runs/:id/fail`
+- Architecture: [docs/agentguard-architecture.md](docs/agentguard-architecture.md)
 
 ### Demo steps
 
 1. Create/select an Agent; send a real Playground task.
-2. Watch the AgentGuard timeline (model/tool spans, checkpoints, usage when present).
-3. Click **Inject crash** while the run is active.
-4. Confirm incident → restart_resume → `RECOVERY_VERIFIED` → run completes.
-5. Send a follow-up message or stop/start to show the platform remains controllable.
+2. Watch the AgentGuard timeline (model/tool spans, checkpoints, budget, usage when present).
+3. Click **Inject crash** (or timeout) while the run is active.
+4. Confirm incident → checkpoint restore → `RECOVERY_VERIFIED` → run completes.
+5. Optionally **Inject budget** or a second crash → Approve / Abort.
+6. Export JSON evidence; send a follow-up message to show post-recovery controllability.
 
 ### Tests
 
@@ -75,6 +77,7 @@ Includes AgentGuard unit and integration tests under `apps/server/src/agentguard
 - Single-node JSON persistence; no recovery across control-plane restarts
 - Failure injection is simulated in `AgentService` (cancel + synthetic incident), not a hard container kill
 - Alerts are UI badges only
+- Trace retention is local JSON only (sensitive-trace threat: keep demos on non-production data)
 - Fixed failure taxonomy; not general autonomous repair
 
 ## Requirements

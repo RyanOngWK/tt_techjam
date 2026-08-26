@@ -94,9 +94,21 @@ export const api = {
     ),
   recoveries: (runId: string) =>
     request<{ recoveries: RecoveryAttempt[] }>("/api/runs/" + runId + "/recoveries"),
-  injectFailure: (runId: string, type: "runtime_crash" | "tool_timeout") =>
+  injectFailure: (
+    runId: string,
+    type: "runtime_crash" | "tool_timeout" | "budget_exceeded",
+  ) =>
     request<{ ok: true }>("/api/runs/" + runId + "/fail", {
       method: "POST",
       body: JSON.stringify({ type }),
     }),
+  resolveApproval: (runId: string, decision: "approve" | "abort") =>
+    request<{ ok: true; decision: "approve" | "abort" }>(
+      "/api/runs/" + runId + "/approve",
+      {
+        method: "POST",
+        body: JSON.stringify({ decision }),
+      },
+    ),
+  exportEventsUrl: (runId: string) => "/api/runs/" + runId + "/events?format=download",
 };

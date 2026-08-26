@@ -22,6 +22,13 @@ function migrateDatabase(raw: unknown): Database {
     ...run,
     recoveryAttemptCount:
       typeof run.recoveryAttemptCount === "number" ? run.recoveryAttemptCount : 0,
+    tokensUsed: typeof run.tokensUsed === "number" ? run.tokensUsed : 0,
+    tokenBudget:
+      typeof run.tokenBudget === "number" ? run.tokenBudget : 50_000,
+    pendingApprovalIncidentId:
+      run.pendingApprovalIncidentId === undefined
+        ? null
+        : run.pendingApprovalIncidentId,
   }));
   return {
     version: 2,

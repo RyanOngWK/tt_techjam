@@ -50,6 +50,7 @@ export async function startRecoveryAttempt(
   input: {
     incident: Incident;
     strategy: RecoveryStrategy;
+    metadata?: Record<string, unknown>;
   },
 ): Promise<RecoveryAttempt> {
   const attempt: RecoveryAttempt = {
@@ -80,6 +81,8 @@ export async function startRecoveryAttempt(
       attemptId: attempt.id,
       strategy: attempt.strategy,
       incidentId: attempt.incidentId,
+      recoveryAttemptId: attempt.id,
+      ...(input.metadata ?? {}),
     },
   });
   return attempt;
@@ -154,6 +157,7 @@ export async function abortIncident(
       run.status = "failed";
       run.error = reason;
       run.completedAt = now();
+      run.pendingApprovalIncidentId = null;
     }
     return structuredClone(stored);
   });
@@ -163,6 +167,33 @@ export async function abortIncident(
     type: "ALERT",
     status: "error",
     metadata: { incidentId, reason },
+    error: reason,
+  });
+}
+
+export async function requestApproval(
+  store: JsonStore,
+  incident: Incident,
+  reason: string,
+): Promise<void> {
+  await store.mutate((database) => {
+    const stored = database.incidents.find((item) => item.id === incident.id);
+    if (stored) stored.status = "awaiting_approval";
+    const run = database.runs.find((item) => item.id === incident.runId);
+    if (run) {
+      run.status = "awaiting_approval";
+      run.pendingApprovalIncidentId = incident.id;
+    }
+  });
+  await appendTraceEvent(store, {
+    runId: incident.runId,
+    type: "APPROVAL_REQUESTED",
+    status: "running",
+    metadata: {
+      incidentId: incident.id,
+      failureType: incident.failureType,
+      reason,
+    },
     error: reason,
   });
 }

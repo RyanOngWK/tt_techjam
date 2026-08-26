@@ -43,7 +43,13 @@ const envSchema = z.object({
   ARK_BASE_URL: z
     .string()
     .url()
-    .default("https://ark.cn-beijing.volces.com/api/v3"),
+    .default("https://ark.ap-southeast.bytepluses.com/api/v3"),
+  AGENTGUARD_TOKEN_BUDGET: z.coerce.number().int().min(0).default(50_000),
+  AGENTGUARD_REQUIRE_APPROVAL_AFTER_CRASHES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(2),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -87,6 +93,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
+    agentGuardTokenBudget: env.AGENTGUARD_TOKEN_BUDGET,
+    agentGuardRequireApprovalAfterCrashes:
+      env.AGENTGUARD_REQUIRE_APPROVAL_AFTER_CRASHES,
     nodeEnv: env.NODE_ENV,
   };
 }

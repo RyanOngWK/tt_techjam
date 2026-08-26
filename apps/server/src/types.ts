@@ -3,17 +3,24 @@ export type RunStatus =
   | "queued"
   | "running"
   | "recovering"
+  | "awaiting_approval"
   | "completed"
   | "failed"
   | "cancelled";
 export type MessageRole = "user" | "assistant";
 
-export type IncidentStatus = "open" | "recovering" | "resolved" | "aborted";
+export type IncidentStatus =
+  | "open"
+  | "recovering"
+  | "resolved"
+  | "aborted"
+  | "awaiting_approval";
 export type RecoveryStatus = "started" | "succeeded" | "failed" | "verified";
 export type FailureType =
   | "runtime_crash"
   | "tool_timeout"
   | "transient_tool_error"
+  | "budget_exceeded"
   | "unknown";
 export type RecoveryStrategy = "retry" | "restart_resume" | "abort";
 export type EventType =
@@ -29,10 +36,16 @@ export type EventType =
   | "RECOVERY_COMPLETED"
   | "RECOVERY_FAILED"
   | "RECOVERY_VERIFIED"
-  | "ALERT";
+  | "ALERT"
+  | "APPROVAL_REQUESTED"
+  | "APPROVAL_GRANTED"
+  | "APPROVAL_DENIED"
+  | "BUDGET_EXCEEDED"
+  | "BUDGET_RAISED";
 export type EventStatus = "ok" | "error" | "running";
 export type Severity = "low" | "medium" | "high";
-export type InjectFailType = "runtime_crash" | "tool_timeout";
+export type InjectFailType = "runtime_crash" | "tool_timeout" | "budget_exceeded";
+export type ApprovalDecision = "approve" | "abort";
 
 export interface Agent {
   id: string;
@@ -71,6 +84,9 @@ export interface AgentRun {
   error: string | null;
   usage: RunUsage | null;
   recoveryAttemptCount: number;
+  tokensUsed: number;
+  tokenBudget: number;
+  pendingApprovalIncidentId: string | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

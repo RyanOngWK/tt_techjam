@@ -10,6 +10,7 @@ export function selectStrategy(failureType: FailureType): RecoveryStrategy {
       return "retry";
     case "runtime_crash":
       return "restart_resume";
+    case "budget_exceeded":
     case "unknown":
     default:
       return "abort";
@@ -20,7 +21,7 @@ export function shouldAbortAfterAttempts(
   failureType: FailureType,
   attemptCountForStrategy: number,
 ): boolean {
-  if (failureType === "unknown") return true;
+  if (failureType === "unknown" || failureType === "budget_exceeded") return true;
   if (failureType === "runtime_crash") {
     return attemptCountForStrategy >= MAX_CRASH_RESTARTS;
   }
@@ -30,7 +31,16 @@ export function shouldAbortAfterAttempts(
   return true;
 }
 
+/** Crash count that should pause for human approval instead of auto-recovering. */
+export function requiresApprovalForCrash(
+  priorCrashRecoveries: number,
+  requireAfterCrashes: number,
+): boolean {
+  // priorCrashRecoveries is how many restart_resume attempts already ran.
+  // requireAfterCrashes=2 means the 2nd crash needs approval (1 auto recovery used).
+  return priorCrashRecoveries + 1 >= requireAfterCrashes;
+}
+
 export function retryBackoffMs(attemptIndex: number): number {
-  // Keep MVP backoff tiny so automated tests and demos stay snappy.
   return attemptIndex <= 1 ? 0 : 10;
 }

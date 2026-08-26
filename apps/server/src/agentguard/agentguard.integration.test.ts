@@ -173,6 +173,93 @@ describe("AgentGuard integration", () => {
     expect(JSON.stringify(modelEvent?.metadata)).not.toContain("super-secret");
     expect(JSON.stringify(modelEvent?.metadata)).not.toContain("tokensecretvalue");
   });
+
+  it("restores the latest checkpoint on timeout retry", async () => {
+    let calls = 0;
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { attempt: calls },
+        });
+        if (calls === 1) {
+          await writeFile(
+            path.join(request.workspacePath, "work.txt"),
+            "dirty",
+            "utf8",
+          );
+          throw new Error("Codex timed out after 1000 ms");
+        }
+        return {
+          output: "retried",
+          threadId: request.threadId ?? "thread-retry",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "RetryCkpt" });
+    await writeFile(path.join(agent.workspacePath, "work.txt"), "clean", "utf8");
+    const { run } = await service.sendMessage(agent.id, "retry me");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(path.join(agent.workspacePath, "work.txt"), "utf8")).toBe(
+      "clean",
+    );
+    expect(service.getRecoveries(run.id)[0]?.strategy).toBe("retry");
+    const started = service
+      .getEvents(run.id)
+      .find((event) => event.type === "RECOVERY_STARTED");
+    expect(started?.metadata.retryOf).toBeTruthy();
+    expect(started?.metadata.checkpointId).toBeTruthy();
+  });
+
+  it("pauses for approval on budget exceed and resumes after approve", async () => {
+    let calls = 0;
+    let rejectFirst!: (error: Error) => void;
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) {
+          return firstHang;
+        }
+        return {
+          output: "after-budget",
+          threadId: request.threadId ?? "thread-budget",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => {
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Budget" });
+    const { run } = await service.sendMessage(agent.id, "spend");
+    await expect
+      .poll(() => service.getEvents(run.id).some((e) => e.type === "CHECKPOINT_CREATED"))
+      .toBe(true);
+    await service.injectFailure(run.id, "budget_exceeded");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    await service.resolveApproval(run.id, "approve");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(service.getEvents(run.id).some((e) => e.type === "BUDGET_RAISED")).toBe(true);
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("AgentGuard fixtures", () => {
