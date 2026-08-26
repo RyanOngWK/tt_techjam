@@ -1,5 +1,12 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "recovering"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export interface Agent {
   id: string;
@@ -35,7 +42,45 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  recoveryAttemptCount?: number;
+  tokensUsed?: number;
+  tokenBudget?: number;
+  pendingApprovalIncidentId?: string | null;
   createdAt: string;
+}
+
+export interface TraceEvent {
+  id: string;
+  runId: string;
+  parentEventId: string | null;
+  type: string;
+  status: string;
+  timestamp: string;
+  durationMs: number | null;
+  metadata: Record<string, unknown>;
+  error: string | null;
+}
+
+export interface Incident {
+  id: string;
+  runId: string;
+  eventId: string;
+  failureType: string;
+  severity: string;
+  status: string;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface RecoveryAttempt {
+  id: string;
+  incidentId: string;
+  runId: string;
+  strategy: string;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  error: string | null;
 }
 
 export interface SystemInfo {
@@ -47,4 +92,5 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+  middleware?: string;
 }

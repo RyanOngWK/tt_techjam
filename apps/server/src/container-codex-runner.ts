@@ -1,14 +1,10 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import { buildCodexArgs, emitParsedStreamEvents, parseCodexEventLine } from "./codex-runner.js";
+import type { ParsedEvents } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
-import type {
-  AgentRunner,
-  RunUsage,
-  RunnerRequest,
-  RunnerResult,
-} from "./types.js";
+import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,13 +16,6 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
-}
-
-interface ParsedEvents {
-  messages: string[];
-  threadId: string | null;
-  usage: RunUsage | null;
-  errors: string[];
 }
 
 export function containerName(agentId: string, instanceId = "default"): string {
@@ -171,12 +160,13 @@ export class ContainerCodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      streamEvents: [],
     };
     let stdout = "";
     let stderr = "";
     let totalBytes = 0;
 
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
+    const consume = async (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
       if (totalBytes > this.config.codexMaxOutputBytes) {
         active.outputExceeded = true;
@@ -188,14 +178,19 @@ export class ContainerCodexRunner implements AgentRunner {
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) parseCodexEventLine(line, parsed);
+        await emitParsedStreamEvents(parsed, request.onEvent);
       } else {
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
       }
     };
 
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
+    child.stdout.on("data", (chunk: Buffer) => {
+      void consume(chunk, "stdout");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      void consume(chunk, "stderr");
+    });
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
@@ -208,7 +203,10 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
+      if (stdout.trim()) {
+        parseCodexEventLine(stdout.trim(), parsed);
+        await emitParsedStreamEvents(parsed, request.onEvent);
+      }
       if (active.cancelled) throw new RunCancelledError();
       if (active.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
@@ -228,7 +226,12 @@ export class ContainerCodexRunner implements AgentRunner {
       }
       const output = parsed.messages.at(-1)?.trim();
       if (!output) throw new Error("Codex completed without an agent message");
-      return { output, threadId: parsed.threadId, usage: parsed.usage };
+      return {
+        output,
+        threadId: parsed.threadId,
+        usage: parsed.usage,
+        timedOut: false,
+      };
     } finally {
       clearTimeout(timeout);
       this.active.delete(request.agentId);

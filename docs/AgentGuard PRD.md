@@ -92,12 +92,15 @@ If no successful span appears within the verification window (see NFRs), the att
 ## 9. MVP Scope (Must Have)
 
 - Agent execution and run IDs (reuse starter run creation).
-- Structured event tracing and failure detection for **runtime crash** and **tool timeout** (other table rows supported where cheap).
-- Retry recovery and runtime restart + checkpoint resume.
+- Structured event tracing and failure detection for **runtime crash**, **tool timeout**, and **budget exceeded**.
+- Retry recovery and runtime restart + checkpoint resume (**both** restore latest workspace + `codexThreadId` checkpoint).
+- Token/cost budget per run (`AGENTGUARD_TOKEN_BUDGET`) with abort or HITL raise-budget.
+- Optional operator approval before a second crash recovery (`AGENTGUARD_REQUIRE_APPROVAL_AFTER_CRASHES`).
 - Checkpoint/resume (workspace + `codexThreadId`).
 - Recovery verification (`RECOVERY_VERIFIED`) and redacted trace logging.
-- Basic dashboard (timeline, incidents, recoveries, alert badges, **model usage when available**) and controlled failure injection.
+- Basic dashboard (timeline with failing-step highlight, incidents, recoveries, budget, alert/approval badges, usage, JSON export) and controlled failure injection (`crash` / `timeout` / `budget`).
 - Automated tests and end-to-end demo capabilities.
+- Architecture one-pager: [agentguard-architecture.md](agentguard-architecture.md).
 
 ### Out of Scope
 
@@ -113,7 +116,7 @@ If no successful span appears within the verification window (see NFRs), the att
 | NFR | MVP default |
 | --- | --- |
 | Max retries per incident (timeout / transient) | 2 retries (3 total attempts) |
-| Retry backoff | Immediate then 1s (no exponential beyond MVP) |
+| Retry backoff | Immediate then 10ms (demo/test snappy; not production backoff) |
 | Tool / step timeout threshold | Match runner bound; classify as `tool_timeout` when exceeded |
 | Verification window | 60s after recovery attempt completes |
 | Checkpoint frequency | After each successful `MODEL_CALL` or `TOOL_CALL` boundary |

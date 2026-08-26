@@ -1,6 +1,51 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "recovering"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
 export type MessageRole = "user" | "assistant";
+
+export type IncidentStatus =
+  | "open"
+  | "recovering"
+  | "resolved"
+  | "aborted"
+  | "awaiting_approval";
+export type RecoveryStatus = "started" | "succeeded" | "failed" | "verified";
+export type FailureType =
+  | "runtime_crash"
+  | "tool_timeout"
+  | "transient_tool_error"
+  | "budget_exceeded"
+  | "unknown";
+export type RecoveryStrategy = "retry" | "restart_resume" | "abort";
+export type EventType =
+  | "RUN_STARTED"
+  | "RUN_COMPLETED"
+  | "RUN_FAILED"
+  | "MODEL_CALL"
+  | "TOOL_CALL"
+  | "CHECKPOINT_CREATED"
+  | "ERROR"
+  | "INCIDENT_OPENED"
+  | "RECOVERY_STARTED"
+  | "RECOVERY_COMPLETED"
+  | "RECOVERY_FAILED"
+  | "RECOVERY_VERIFIED"
+  | "ALERT"
+  | "APPROVAL_REQUESTED"
+  | "APPROVAL_GRANTED"
+  | "APPROVAL_DENIED"
+  | "BUDGET_EXCEEDED"
+  | "BUDGET_RAISED";
+export type EventStatus = "ok" | "error" | "running";
+export type Severity = "low" | "medium" | "high";
+export type InjectFailType = "runtime_crash" | "tool_timeout" | "budget_exceeded";
+export type ApprovalDecision = "approve" | "abort";
 
 export interface Agent {
   id: string;
@@ -38,16 +83,68 @@ export interface AgentRun {
   output: string | null;
   error: string | null;
   usage: RunUsage | null;
+  recoveryAttemptCount: number;
+  tokensUsed: number;
+  tokenBudget: number;
+  pendingApprovalIncidentId: string | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
 }
 
+export interface TraceEvent {
+  id: string;
+  runId: string;
+  parentEventId: string | null;
+  type: EventType;
+  status: EventStatus;
+  timestamp: string;
+  durationMs: number | null;
+  metadata: Record<string, unknown>;
+  error: string | null;
+}
+
+export interface Incident {
+  id: string;
+  runId: string;
+  eventId: string;
+  failureType: FailureType;
+  severity: Severity;
+  status: IncidentStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface RecoveryAttempt {
+  id: string;
+  incidentId: string;
+  runId: string;
+  strategy: RecoveryStrategy;
+  status: RecoveryStatus;
+  startedAt: string;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export interface Checkpoint {
+  id: string;
+  runId: string;
+  agentId: string;
+  codexThreadId: string | null;
+  workspaceSnapshotRef: string;
+  boundary: string;
+  createdAt: string;
+}
+
 export interface Database {
-  version: 1;
+  version: 2;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  events: TraceEvent[];
+  incidents: Incident[];
+  recoveryAttempts: RecoveryAttempt[];
+  checkpoints: Checkpoint[];
 }
 
 export interface CreateAgentInput {
@@ -66,6 +163,14 @@ export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+  timedOut?: boolean;
+}
+
+export interface RunnerStreamEvent {
+  type: EventType;
+  status: EventStatus;
+  metadata?: Record<string, unknown>;
+  error?: string | null;
 }
 
 export interface RunnerRequest {
@@ -73,6 +178,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  onEvent?: (event: RunnerStreamEvent) => void | Promise<void>;
 }
 
 export interface AgentRunner {

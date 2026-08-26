@@ -4,12 +4,16 @@ A minimal Agent platform for three-day middleware hackathons. It provides Agent
 CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
 Volcengine Ark Responses API.
 
+**Middleware story: AgentGuard** — team-designed reliability middleware
+(structured observability + deterministic failure recovery). See
+[AgentGuard PRD](docs/AgentGuard%20PRD.md) and
+[AgentGuard TRD](docs/AgentGuard%20TRD.md).
+
 Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
+> This is a single-user proof of concept. Do not use production data or
 > credentials. See [SECURITY.md](SECURITY.md).
 
 ## Screenshots
@@ -30,6 +34,51 @@ Volcengine ECS.
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
+- **AgentGuard:** run event timeline, incidents, checkpoints, token budget + HITL approval, simulated failure injection, and policy-driven retry / restart-resume
+
+## AgentGuard
+
+### Problem
+
+Agent runs fail opaquely: a crash or timeout ends the turn, operators restart from scratch, and observability is a dashboard rather than a recovery sensor.
+
+### Rationale
+
+AgentGuard keeps recovery deterministic (fixed policies, not LLM-invented fixes) and uses structured traces as the feedback loop for detection and verification.
+
+### Design summary
+
+- **Trace** — persist redacted `TraceEvent`s (`runId` = trace id, `eventId` = span id); export via `?format=download`
+- **Detect** — classify `runtime_crash` / `tool_timeout` / `budget_exceeded`
+- **Recover** — `retry` or `restart_resume` from workspace + `codexThreadId` checkpoints (both restore)
+- **Budget / HITL** — soft token budget; second crash or budget trip can pause for Approve / Abort
+- **Verify** — emit `RECOVERY_VERIFIED` after a successful recovered turn
+- Architecture: [docs/agentguard-architecture.md](docs/agentguard-architecture.md)
+
+### Demo steps
+
+1. Create/select an Agent; send a real Playground task.
+2. Watch the AgentGuard timeline (model/tool spans, checkpoints, budget, usage when present).
+3. Click **Inject crash** (or timeout) while the run is active.
+4. Confirm incident → checkpoint restore → `RECOVERY_VERIFIED` → run completes.
+5. Optionally **Inject budget** or a second crash → Approve / Abort.
+6. Export JSON evidence; send a follow-up message to show post-recovery controllability.
+
+### Tests
+
+```bash
+npm run check
+```
+
+Includes AgentGuard unit and integration tests under `apps/server/src/agentguard/`.
+
+### Limitations
+
+- Single-node JSON persistence; no recovery across control-plane restarts
+- Failure injection is simulated in `AgentService` (cancel + synthetic incident), not a hard container kill
+- Alerts are UI badges only
+- Trace retention is local JSON only (sensitive-trace threat: keep demos on non-production data)
+- Fixed failure taxonomy; not general autonomous repair
 
 ## Requirements
 
@@ -239,6 +288,9 @@ docker compose config
 
 ## Documentation
 
+- [AgentGuard PRD](docs/AgentGuard%20PRD.md)
+- [AgentGuard TRD](docs/AgentGuard%20TRD.md)
+- [TechJam official brief](docs/TechJam_Info.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

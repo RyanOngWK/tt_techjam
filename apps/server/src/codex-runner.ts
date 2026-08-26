@@ -8,6 +8,7 @@ import type {
   RunUsage,
   RunnerRequest,
   RunnerResult,
+  RunnerStreamEvent,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +18,7 @@ export interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  streamEvents: RunnerStreamEvent[];
 }
 
 export function buildCodexArgs(
@@ -41,6 +43,41 @@ export function buildCodexArgs(
   return args;
 }
 
+function mapItemToStreamEvent(
+  item: Record<string, unknown>,
+): RunnerStreamEvent | null {
+  const itemType = typeof item.type === "string" ? item.type : "";
+  if (itemType === "agent_message" || itemType === "reasoning") {
+    return {
+      type: "MODEL_CALL",
+      status: "ok",
+      metadata: { itemType, ...(typeof item.text === "string" ? { preview: item.text.slice(0, 200) } : {}) },
+    };
+  }
+  if (
+    itemType === "command_execution" ||
+    itemType === "file_change" ||
+    itemType === "mcp_tool_call" ||
+    itemType.includes("tool") ||
+    itemType.includes("command") ||
+    itemType.includes("file")
+  ) {
+    return {
+      type: "TOOL_CALL",
+      status: "ok",
+      metadata: { itemType },
+    };
+  }
+  if (itemType) {
+    return {
+      type: "TOOL_CALL",
+      status: "ok",
+      metadata: { itemType },
+    };
+  }
+  return null;
+}
+
 export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
   let event: Record<string, unknown>;
   try {
@@ -57,6 +94,10 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     const item = event.item as Record<string, unknown>;
     if (item.type === "agent_message" && typeof item.text === "string") {
       parsed.messages.push(item.text);
+    }
+    const streamEvent = mapItemToStreamEvent(item);
+    if (streamEvent) {
+      parsed.streamEvents.push(streamEvent);
     }
   }
 
@@ -83,6 +124,22 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
           ? event.error
           : "Codex reported an unknown error";
     parsed.errors.push(message);
+    parsed.streamEvents.push({
+      type: "ERROR",
+      status: "error",
+      error: message,
+    });
+  }
+}
+
+export async function emitParsedStreamEvents(
+  parsed: ParsedEvents,
+  onEvent?: RunnerRequest["onEvent"],
+): Promise<void> {
+  if (!onEvent) return;
+  const events = parsed.streamEvents.splice(0, parsed.streamEvents.length);
+  for (const event of events) {
+    await onEvent(event);
   }
 }
 
@@ -154,12 +211,13 @@ export class CodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      streamEvents: [],
     };
     let stdout = "";
     let stderr = "";
     let totalBytes = 0;
 
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
+    const consume = async (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
       if (totalBytes > this.config.codexMaxOutputBytes) {
         active.outputExceeded = true;
@@ -173,6 +231,7 @@ export class CodexRunner implements AgentRunner {
         for (const line of lines) {
           parseCodexEventLine(line, parsed);
         }
+        await emitParsedStreamEvents(parsed, request.onEvent);
       } else {
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) {
@@ -181,8 +240,12 @@ export class CodexRunner implements AgentRunner {
       }
     };
 
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
+    child.stdout.on("data", (chunk: Buffer) => {
+      void consume(chunk, "stdout");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      void consume(chunk, "stderr");
+    });
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
@@ -197,6 +260,7 @@ export class CodexRunner implements AgentRunner {
       });
       if (stdout.trim()) {
         parseCodexEventLine(stdout.trim(), parsed);
+        await emitParsedStreamEvents(parsed, request.onEvent);
       }
       if (active.cancelled) {
         throw new RunCancelledError();
@@ -219,6 +283,7 @@ export class CodexRunner implements AgentRunner {
         output,
         threadId: parsed.threadId,
         usage: parsed.usage,
+        timedOut: false,
       };
     } finally {
       clearTimeout(timeout);
