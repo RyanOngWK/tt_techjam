@@ -128,6 +128,36 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  app.get("/api/runs/:id/events", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { events: service.getEvents(id) };
+  });
+
+  app.get("/api/runs/:id/recoveries", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { recoveries: service.getRecoveries(id) };
+  });
+
+  app.get("/api/runs/:id/checkpoints", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { checkpoints: service.getCheckpoints(id) };
+  });
+
+  app.get("/api/incidents", async (request) => {
+    const query = z
+      .object({ runId: z.string().uuid().optional() })
+      .parse(request.query);
+    return { incidents: service.getIncidents(query.runId) };
+  });
+
+  app.post("/api/runs/:id/fail", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    const body = z
+      .object({ type: z.enum(["runtime_crash", "tool_timeout"]) })
+      .parse(request.body);
+    return service.injectFailure(id, body.type);
+  });
+
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {

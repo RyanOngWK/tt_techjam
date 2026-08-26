@@ -1096,3 +1096,90 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+.agentguard-panel {
+  margin: 0 18px 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f7f6f2;
+}
+
+.agentguard-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.agentguard-header h3 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agentguard-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agentguard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agentguard-columns {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 14px;
+}
+
+.trace-list {
+  list-style: none;
+  margin: 8px 0 12px;
+  padding: 0;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.trace-list li {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.trace-list code {
+  font-size: 11px;
+}
+
+.trace-list .muted,
+.muted {
+  color: var(--muted);
+}
+
+.alert-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f8e4e4;
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .agentguard-columns {
+    grid-template-columns: 1fr;
+  }
+}

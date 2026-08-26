@@ -207,7 +207,7 @@ sequenceDiagram
 | `unknown` | `abort` | Immediate abort + `ALERT` |
 | Policy exhausted | `abort` | `ALERT` badge on run |
 
-Backoff: attempt 1 immediate; attempt 2 after 1s.  
+Backoff: attempt 1 immediate; attempt 2 after 10ms.  
 Verification window: 60s after attempt `succeeded` for restart/retry paths.
 
 Classification is rule-based (exit codes, runner timeout flags, injected fail type)—never LLM-invented recovery (ADR-001).

@@ -47,6 +47,7 @@ describe("Codex runner protocol", () => {
         outputTokens?: number;
       } | null,
       errors: [] as string[],
+      streamEvents: [] as Array<{ type: string; status: string }>,
     };
     parseCodexEventLine(
       JSON.stringify({ type: "thread.started", thread_id: "thread-123" }),
@@ -69,5 +70,6 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+    expect(parsed.streamEvents[0]?.type).toBe("MODEL_CALL");
   });
 });

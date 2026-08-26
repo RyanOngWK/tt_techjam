@@ -1,0 +1,13 @@
+{
+  "events": [
+    "RUN_STARTED",
+    "MODEL_CALL",
+    "CHECKPOINT_CREATED",
+    "ERROR",
+    "INCIDENT_OPENED",
+    "RECOVERY_STARTED",
+    "RECOVERY_COMPLETED",
+    "RECOVERY_VERIFIED",
+    "RUN_COMPLETED"
+  ]
+}

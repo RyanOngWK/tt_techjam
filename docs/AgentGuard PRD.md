@@ -113,7 +113,7 @@ If no successful span appears within the verification window (see NFRs), the att
 | NFR | MVP default |
 | --- | --- |
 | Max retries per incident (timeout / transient) | 2 retries (3 total attempts) |
-| Retry backoff | Immediate then 1s (no exponential beyond MVP) |
+| Retry backoff | Immediate then 10ms (demo/test snappy; not production backoff) |
 | Tool / step timeout threshold | Match runner bound; classify as `tool_timeout` when exceeded |
 | Verification window | 60s after recovery attempt completes |
 | Checkpoint frequency | After each successful `MODEL_CALL` or `TOOL_CALL` boundary |

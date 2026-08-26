@@ -1,13 +1,39 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Database } from "./types.js";
+import type { AgentRun, Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 2,
   agents: [],
   messages: [],
   runs: [],
+  events: [],
+  incidents: [],
+  recoveryAttempts: [],
+  checkpoints: [],
 });
+
+function migrateDatabase(raw: unknown): Database {
+  const parsed = raw as Partial<Database> & { version?: number; runs?: AgentRun[] };
+  if (!Array.isArray(parsed.agents)) {
+    throw new Error("Unsupported database format");
+  }
+  const runs = (parsed.runs ?? []).map((run) => ({
+    ...run,
+    recoveryAttemptCount:
+      typeof run.recoveryAttemptCount === "number" ? run.recoveryAttemptCount : 0,
+  }));
+  return {
+    version: 2,
+    agents: parsed.agents,
+    messages: parsed.messages ?? [],
+    runs,
+    events: parsed.events ?? [],
+    incidents: parsed.incidents ?? [],
+    recoveryAttempts: parsed.recoveryAttempts ?? [],
+    checkpoints: parsed.checkpoints ?? [],
+  };
+}
 
 export class JsonStore {
   private data: Database = emptyDatabase();
@@ -19,11 +45,10 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
-        throw new Error("Unsupported database format");
+      this.data = migrateDatabase(JSON.parse(raw));
+      if ((JSON.parse(raw) as { version?: number }).version !== 2) {
+        await this.persist();
       }
-      this.data = parsed;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

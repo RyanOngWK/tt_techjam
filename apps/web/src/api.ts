@@ -1,4 +1,12 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  Incident,
+  Message,
+  RecoveryAttempt,
+  SystemInfo,
+  TraceEvent,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -78,4 +86,17 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  events: (runId: string) =>
+    request<{ events: TraceEvent[] }>("/api/runs/" + runId + "/events"),
+  incidents: (runId?: string) =>
+    request<{ incidents: Incident[] }>(
+      "/api/incidents" + (runId ? "?runId=" + runId : ""),
+    ),
+  recoveries: (runId: string) =>
+    request<{ recoveries: RecoveryAttempt[] }>("/api/runs/" + runId + "/recoveries"),
+  injectFailure: (runId: string, type: "runtime_crash" | "tool_timeout") =>
+    request<{ ok: true }>("/api/runs/" + runId + "/fail", {
+      method: "POST",
+      body: JSON.stringify({ type }),
+    }),
 };

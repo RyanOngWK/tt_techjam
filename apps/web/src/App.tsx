@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Incident, Message, RecoveryAttempt, SystemInfo, TraceEvent } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -45,6 +45,9 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [recoveries, setRecoveries] = useState<RecoveryAttempt[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -98,6 +101,9 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setTraceEvents([]);
+    setIncidents([]);
+    setRecoveries([]);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
@@ -108,7 +114,10 @@ export default function App() {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
-        if (latest && ["queued", "running"].includes(latest.status)) {
+        if (latest) {
+          void refreshAgentGuard(latest.id).catch(() => undefined);
+        }
+        if (latest && ["queued", "running", "recovering"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
           );
@@ -201,6 +210,18 @@ export default function App() {
     }
   };
 
+  const refreshAgentGuard = useCallback(async (runId: string) => {
+    const [eventsResult, incidentsResult, recoveriesResult] = await Promise.all([
+      api.events(runId),
+      api.incidents(runId),
+      api.recoveries(runId),
+    ]);
+    if (!mountedRef.current) return;
+    setTraceEvents(eventsResult.events);
+    setIncidents(incidentsResult.incidents);
+    setRecoveries(recoveriesResult.recoveries);
+  }, []);
+
   const pollRun = async (runId: string, agentId: string) => {
     if (pollingRunIds.current.has(runId)) return;
     pollingRunIds.current.add(runId);
@@ -210,13 +231,25 @@ export default function App() {
         if (!mountedRef.current) return;
         const result = await api.run(runId);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
-        if (!["queued", "running"].includes(result.run.status)) {
+        await refreshAgentGuard(runId).catch(() => undefined);
+        if (!["queued", "running", "recovering"].includes(result.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
         }
       }
     } finally {
       pollingRunIds.current.delete(runId);
+    }
+  };
+
+  const injectFailure = async (type: "runtime_crash" | "tool_timeout") => {
+    if (!activeRun) return;
+    setError(null);
+    try {
+      await api.injectFailure(activeRun.id, type);
+      await refreshAgentGuard(activeRun.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -520,15 +553,21 @@ export default function App() {
                     </article>
                   ))
                 )}
-                {activeRun && ["queued", "running"].includes(activeRun.status) && (
+                {activeRun && ["queued", "running", "recovering"].includes(activeRun.status) && (
                   <article className="message message-assistant thinking">
                     <div className="message-meta">
                       <strong>{selected.name}</strong>
-                      <span>working in the Agent workspace</span>
+                      <span>
+                        {activeRun.status === "recovering"
+                          ? "AgentGuard recovering…"
+                          : "working in the Agent workspace"}
+                      </span>
                     </div>
                     <div className="thinking-row">
                       <Spinner />
-                      Codex is reading, editing, or running commands…
+                      {activeRun.status === "recovering"
+                        ? "Middleware is applying a recovery policy…"
+                        : "Codex is reading, editing, or running commands…"}
                     </div>
                   </article>
                 )}
@@ -540,6 +579,100 @@ export default function App() {
                 )}
                 <div ref={messageEnd} />
               </div>
+
+              {activeRun && (
+                <section className="agentguard-panel" aria-label="AgentGuard">
+                  <div className="agentguard-header">
+                    <div>
+                      <span className="eyebrow">AgentGuard</span>
+                      <h3>
+                        Run observability
+                        {incidents.some((item) => item.status === "aborted") ? (
+                          <span className="alert-badge">ALERT</span>
+                        ) : null}
+                      </h3>
+                    </div>
+                    <div className="agentguard-actions">
+                      <button
+                        type="button"
+                        className="button button-ghost"
+                        disabled={!["running", "recovering"].includes(activeRun.status)}
+                        onClick={() => void injectFailure("runtime_crash")}
+                      >
+                        Inject crash
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-ghost"
+                        disabled={!["running", "recovering"].includes(activeRun.status)}
+                        onClick={() => void injectFailure("tool_timeout")}
+                      >
+                        Inject timeout
+                      </button>
+                    </div>
+                  </div>
+                  <div className="agentguard-meta">
+                    <span>Status: {activeRun.status}</span>
+                    <span>
+                      Recoveries: {activeRun.recoveryAttemptCount ?? recoveries.length}
+                    </span>
+                    {activeRun.usage ? (
+                      <span>
+                        Usage: in {activeRun.usage.inputTokens ?? 0} / out{" "}
+                        {activeRun.usage.outputTokens ?? 0}
+                      </span>
+                    ) : (
+                      <span>Usage: n/a</span>
+                    )}
+                  </div>
+                  <div className="agentguard-columns">
+                    <div>
+                      <strong>Timeline</strong>
+                      <ul className="trace-list">
+                        {traceEvents.length === 0 ? (
+                          <li className="muted">No events yet</li>
+                        ) : (
+                          traceEvents.map((event) => (
+                            <li key={event.id}>
+                              <code>{event.type}</code>
+                              <span>{event.status}</span>
+                              {event.error ? <em>{event.error}</em> : null}
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                    </div>
+                    <div>
+                      <strong>Incidents</strong>
+                      <ul className="trace-list">
+                        {incidents.length === 0 ? (
+                          <li className="muted">None</li>
+                        ) : (
+                          incidents.map((incident) => (
+                            <li key={incident.id}>
+                              <code>{incident.failureType}</code>
+                              <span>{incident.status}</span>
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                      <strong>Recoveries</strong>
+                      <ul className="trace-list">
+                        {recoveries.length === 0 ? (
+                          <li className="muted">None</li>
+                        ) : (
+                          recoveries.map((attempt) => (
+                            <li key={attempt.id}>
+                              <code>{attempt.strategy}</code>
+                              <span>{attempt.status}</span>
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+                </section>
+              )}
 
               <form className="composer" onSubmit={sendMessage}>
                 <textarea
@@ -559,7 +692,8 @@ export default function App() {
                   disabled={
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
+                    (activeRun != null &&
+                      ["queued", "running", "recovering"].includes(activeRun.status))
                   }
                   rows={3}
                 />
@@ -573,7 +707,8 @@ export default function App() {
                       !prompt.trim() ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
+                      (activeRun != null &&
+                        ["queued", "running", "recovering"].includes(activeRun.status))
                     }
                     aria-label="Send message"
                   >

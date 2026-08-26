@@ -1,0 +1,10 @@
+{
+  "events": [
+    "RUN_STARTED",
+    "TOOL_CALL",
+    "ERROR",
+    "INCIDENT_OPENED",
+    "RECOVERY_STARTED",
+    "ALERT"
+  ]
+}
