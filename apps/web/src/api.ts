@@ -1,6 +1,8 @@
 import type {
   Agent,
   AgentRun,
+  AgentGuardSettingsOverrides,
+  AgentGuardSettingsResponse,
   Incident,
   Message,
   RecoveryAttempt,
@@ -96,7 +98,11 @@ export const api = {
     request<{ recoveries: RecoveryAttempt[] }>("/api/runs/" + runId + "/recoveries"),
   injectFailure: (
     runId: string,
-    type: "runtime_crash" | "tool_timeout" | "budget_exceeded",
+    type:
+      | "runtime_crash"
+      | "tool_timeout"
+      | "budget_exceeded"
+      | "budget_projected_exceeded",
   ) =>
     request<{ ok: true }>("/api/runs/" + runId + "/fail", {
       method: "POST",
@@ -110,5 +116,16 @@ export const api = {
         body: JSON.stringify({ decision }),
       },
     ),
+  getAgentGuardSettings: () =>
+    request<AgentGuardSettingsResponse>("/api/agentguard/settings"),
+  updateAgentGuardSettings: (body: AgentGuardSettingsOverrides) =>
+    request<AgentGuardSettingsResponse>("/api/agentguard/settings", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  resetAgentGuardSettings: () =>
+    request<AgentGuardSettingsResponse>("/api/agentguard/settings/reset", {
+      method: "POST",
+    }),
   exportEventsUrl: (runId: string) => "/api/runs/" + runId + "/events?format=download",
 };

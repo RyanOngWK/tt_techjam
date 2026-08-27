@@ -5,8 +5,12 @@ export function classifyFailure(input: {
   timedOut?: boolean;
   cancelled?: boolean;
   budgetExceeded?: boolean;
+  budgetProjectedExceeded?: boolean;
   message?: string | null;
 }): FailureType {
+  if (input.injected === "budget_projected_exceeded" || input.budgetProjectedExceeded) {
+    return "budget_projected_exceeded";
+  }
   if (input.injected === "budget_exceeded" || input.budgetExceeded) {
     return "budget_exceeded";
   }
@@ -20,6 +24,9 @@ export function classifyFailure(input: {
     return "unknown";
   }
   const message = (input.message ?? "").toLowerCase();
+  if (message.includes("budget projected") || message.includes("projected exceed")) {
+    return "budget_projected_exceeded";
+  }
   if (message.includes("budget")) {
     return "budget_exceeded";
   }
@@ -44,6 +51,8 @@ export function severityFor(failureType: FailureType): "low" | "medium" | "high"
   switch (failureType) {
     case "tool_timeout":
     case "transient_tool_error":
+      return "medium";
+    case "budget_projected_exceeded":
       return "medium";
     case "budget_exceeded":
     case "runtime_crash":

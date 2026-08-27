@@ -93,4 +93,35 @@ export interface SystemInfo {
   containerEngine: string | null;
   runtime: string;
   middleware?: string;
+  agentGuardTokenBudget?: number;
+}
+
+export interface AgentGuardSettingsOverrides {
+  tokenBudget?: number;
+  softRatio?: number;
+  strictRatio?: number;
+  estModelTokens?: number;
+  estToolTokens?: number;
+  charsPerToken?: number;
+  nextTurnEstimate?: number;
+  maxCompressRecoveries?: number;
+  requireApprovalAfterCrashes?: number;
+}
+
+export interface AgentGuardSettingsEffective {
+  tokenBudget: number;
+  softRatio: number;
+  strictRatio: number;
+  estModelTokens: number;
+  estToolTokens: number;
+  charsPerToken: number;
+  nextTurnEstimate: number;
+  maxCompressRecoveries: number;
+  requireApprovalAfterCrashes: number;
+}
+
+export interface AgentGuardSettingsResponse {
+  defaults: AgentGuardSettingsEffective;
+  overrides: AgentGuardSettingsOverrides | null;
+  effective: AgentGuardSettingsEffective;
 }

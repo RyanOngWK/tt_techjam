@@ -8,7 +8,7 @@ knowledge for faster navigation and synthesis.
 
 - [Overview](overview.md): purpose, scope, and current constraints.
 - [Architecture](architecture.md): component boundaries and the request/run flow.
-- [AgentGuard](agentguard.md): reliability middleware (trace, detect, recover, budget, HITL).
+- [AgentGuard](agentguard.md): reliability middleware (trace, detect, recover, proactive budget, HITL).
 
 ## System Areas
 

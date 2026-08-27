@@ -2,6 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import {
+  budgetTier,
+  projectUsage,
+  shouldBlockPreTurn,
+  shouldCancelMidTurn,
+  summarizeTraceEvent,
+  wrapPrompt,
+  type BudgetEstimates,
+  type BudgetTier,
+} from "./agentguard/budget-policy.js";
+import {
   createWorkspaceCheckpoint,
   pruneCheckpoints,
   restoreWorkspaceCheckpoint,
@@ -21,6 +31,13 @@ import {
   startRecoveryAttempt,
   verifyRecovery,
 } from "./agentguard/recovery-controller.js";
+import {
+  applyPatch,
+  buildSettingsResponse,
+  mergeSettings,
+  validateEffectiveRatios,
+  type PatchAgentGuardSettingsInput,
+} from "./agentguard/settings.js";
 import { appendTraceEvent, eventsForRun } from "./agentguard/trace-collector.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
@@ -37,6 +54,7 @@ import type {
   RecoveryAttempt,
   TraceEvent,
   UpdateAgentInput,
+  AgentGuardSettingsResponse,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -44,6 +62,15 @@ const now = () => new Date().toISOString();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function estimateEventBytes(metadata: Record<string, unknown> | undefined): number {
+  if (!metadata) return 0;
+  try {
+    return Buffer.byteLength(JSON.stringify(metadata), "utf8");
+  } catch {
+    return 0;
+  }
 }
 
 type ApprovalWaiter = {
@@ -56,6 +83,7 @@ export class AgentService {
   private readonly cancellationRequests = new Set<string>();
   private readonly pendingInjections = new Map<string, InjectFailType>();
   private readonly injectionCancels = new Set<string>();
+  private readonly budgetProjectedCancels = new Set<string>();
   private readonly approvalWaiters = new Map<string, ApprovalWaiter>();
 
   constructor(
@@ -86,7 +114,7 @@ export class AgentService {
         }
         if (typeof run.tokensUsed !== "number") run.tokensUsed = 0;
         if (typeof run.tokenBudget !== "number") {
-          run.tokenBudget = this.config.agentGuardTokenBudget;
+          run.tokenBudget = this.effectiveSettings().tokenBudget;
         }
         if (run.pendingApprovalIncidentId === undefined) {
           run.pendingApprovalIncidentId = null;
@@ -316,7 +344,7 @@ export class AgentService {
       usage: null,
       recoveryAttemptCount: 0,
       tokensUsed: 0,
-      tokenBudget: this.config.agentGuardTokenBudget,
+      tokenBudget: this.effectiveSettings().tokenBudget,
       pendingApprovalIncidentId: null,
       startedAt: null,
       completedAt: null,
@@ -378,7 +406,7 @@ export class AgentService {
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
       middleware: "AgentGuard",
-      agentGuardTokenBudget: this.config.agentGuardTokenBudget,
+      agentGuardTokenBudget: this.effectiveSettings().tokenBudget,
     };
   }
 
@@ -399,8 +427,10 @@ export class AgentService {
 
     let pendingVerifyAttemptId: string | null = null;
     let agent = this.getAgent(agentAtStart.id);
-    let prompt = run.prompt;
+    let turnPrompt = run.prompt;
     let attempts = 0;
+    let lastEmittedTier: BudgetTier | "none" = "none";
+    let preTurnBlockedOnce = false;
 
     while (attempts < 8) {
       attempts += 1;
@@ -409,10 +439,46 @@ export class AgentService {
           throw new RunCancelledError();
         }
 
+        const currentRun = this.getRun(run.id);
+        const estimates = this.budgetEstimates();
+        const prepared = await this.prepareTurnPrompt({
+          run: currentRun,
+          originalPrompt: run.prompt,
+          turnPrompt,
+          estimates,
+          lastEmittedTier,
+          preTurnBlockedOnce,
+        });
+        if (prepared.action === "awaiting_approval") {
+          const decision = await this.waitForApproval(run.id, prepared.incidentId);
+          if (decision === "abort") {
+            await abortIncident(
+              this.store,
+              prepared.incidentId,
+              "Operator denied recovery after pre-turn budget block",
+            );
+            await this.failRun(agent.id, run.id, "Budget exceeded; recovery denied", false);
+            return;
+          }
+          await this.raiseTokenBudget(run.id, prepared.incidentId);
+          preTurnBlockedOnce = false;
+          lastEmittedTier = "none";
+          continue;
+        }
+        turnPrompt = prepared.turnPrompt;
+        lastEmittedTier = prepared.lastEmittedTier;
+        preTurnBlockedOnce = prepared.preTurnBlockedOnce;
+        const promptForRunner = prepared.promptForRunner;
+
+        let modelCalls = 0;
+        let toolCalls = 0;
+        let streamBytes = 0;
+        let midTurnCancelIssued = false;
+
         const result = await this.runner.run({
           agentId: agent.id,
           workspacePath: agent.workspacePath,
-          prompt,
+          prompt: promptForRunner,
           threadId: agent.codexThreadId,
           onEvent: async (event) => {
             await appendTraceEvent(this.store, {
@@ -426,8 +492,51 @@ export class AgentService {
               (event.type === "MODEL_CALL" || event.type === "TOOL_CALL") &&
               event.status === "ok"
             ) {
+              if (event.type === "MODEL_CALL") modelCalls += 1;
+              if (event.type === "TOOL_CALL") toolCalls += 1;
+              streamBytes += estimateEventBytes(event.metadata);
               await this.checkpointAfterSpan(agent.id, run.id, event.type.toLowerCase());
               agent = this.getAgent(agent.id);
+
+              if (!midTurnCancelIssued) {
+                const liveRun = this.getRun(run.id);
+                const tier = budgetTier(
+                  liveRun.tokensUsed,
+                  liveRun.tokenBudget,
+                  estimates,
+                );
+                const projected = projectUsage({
+                  tokensUsed: liveRun.tokensUsed,
+                  modelCalls,
+                  toolCalls,
+                  streamBytes,
+                  estimates,
+                });
+                if (
+                  shouldCancelMidTurn({
+                    projected,
+                    tokenBudget: liveRun.tokenBudget,
+                    tier,
+                  })
+                ) {
+                  midTurnCancelIssued = true;
+                  this.budgetProjectedCancels.add(agent.id);
+                  await appendTraceEvent(this.store, {
+                    runId: run.id,
+                    type: "BUDGET_PROJECTED_EXCEED",
+                    status: "error",
+                    metadata: {
+                      projected,
+                      tokensUsed: liveRun.tokensUsed,
+                      tokenBudget: liveRun.tokenBudget,
+                      modelCalls,
+                      toolCalls,
+                      streamBytes,
+                    },
+                  });
+                  await this.runner.cancel(agent.id);
+                }
+              }
             }
           },
         });
@@ -526,49 +635,19 @@ export class AgentService {
             cancelled: false,
             message: "Injected " + injected,
           });
-          if (recovered.action === "awaiting_approval") {
-            const decision = await this.waitForApproval(run.id, recovered.incidentId);
-            if (decision === "abort") {
-              await abortIncident(
-                this.store,
-                recovered.incidentId,
-                "Operator denied recovery",
-              );
-              await this.failRun(agent.id, run.id, "Recovery denied by operator", false);
-              return;
-            }
-            if (recovered.failureType === "budget_exceeded") {
-              await this.raiseTokenBudget(run.id, recovered.incidentId);
-              pendingVerifyAttemptId = null;
-              agent = this.getAgent(agent.id);
-              prompt = run.prompt;
-              continue;
-            }
-            const afterApprove = await this.performApprovedRecovery({
-              agent,
-              run: this.getRun(run.id),
-              incidentId: recovered.incidentId,
-              failureType: recovered.failureType,
-            });
-            if (afterApprove.action === "retry" || afterApprove.action === "restart_resume") {
-              pendingVerifyAttemptId = afterApprove.attemptId;
-              agent = this.getAgent(agent.id);
-              prompt =
-                afterApprove.action === "retry"
-                  ? run.prompt
-                  : "Resume the previous task after a runtime interruption. Continue from the latest workspace state.";
-              continue;
-            }
-            return;
-          }
-          if (recovered.action === "retry" || recovered.action === "restart_resume") {
-            pendingVerifyAttemptId = recovered.attemptId;
-            agent = this.getAgent(agent.id);
-            prompt =
-              recovered.action === "retry"
-                ? run.prompt
-                : "Resume the previous task after a runtime interruption. Continue from the latest workspace state.";
-            if (recovered.backoffMs) await sleep(recovered.backoffMs);
+          const continued = await this.applyRecoveryContinuation({
+            recovered,
+            agent,
+            run,
+            pendingVerifyAttemptId,
+            originalPrompt: run.prompt,
+          });
+          if (continued.outcome === "return") return;
+          pendingVerifyAttemptId = continued.pendingVerifyAttemptId;
+          agent = continued.agent;
+          turnPrompt = continued.turnPrompt;
+          if (continued.outcome === "continue") {
+            if (continued.backoffMs) await sleep(continued.backoffMs);
             continue;
           }
           return;
@@ -607,8 +686,9 @@ export class AgentService {
         const message = error instanceof Error ? error.message : String(error);
         const injected = this.pendingInjections.get(run.id);
         const injectionCancel = this.injectionCancels.has(agent.id);
+        const budgetProjectedCancel = this.budgetProjectedCancels.has(agent.id);
 
-        if (cancelled && !injected && !injectionCancel) {
+        if (cancelled && !injected && !injectionCancel && !budgetProjectedCancel) {
           await this.failRun(agent.id, run.id, message, true);
           await appendTraceEvent(this.store, {
             runId: run.id,
@@ -625,6 +705,7 @@ export class AgentService {
           /timed out|timeout/i.test(message);
         this.pendingInjections.delete(run.id);
         this.injectionCancels.delete(agent.id);
+        this.budgetProjectedCancels.delete(agent.id);
 
         if (
           (injected === "runtime_crash" || /exited with code|crash/i.test(message)) &&
@@ -640,51 +721,24 @@ export class AgentService {
           injected: injected ?? null,
           timedOut,
           cancelled: false,
-          message,
+          budgetProjectedExceeded: budgetProjectedCancel,
+          message: budgetProjectedCancel
+            ? "Token budget projected exceed; compressing context"
+            : message,
         });
-        if (recovered.action === "awaiting_approval") {
-          const decision = await this.waitForApproval(run.id, recovered.incidentId);
-          if (decision === "abort") {
-            await abortIncident(
-              this.store,
-              recovered.incidentId,
-              "Operator denied recovery",
-            );
-            await this.failRun(agent.id, run.id, "Recovery denied by operator", false);
-            return;
-          }
-          if (recovered.failureType === "budget_exceeded") {
-            await this.raiseTokenBudget(run.id, recovered.incidentId);
-            pendingVerifyAttemptId = null;
-            agent = this.getAgent(agent.id);
-            prompt = run.prompt;
-            continue;
-          }
-          const afterApprove = await this.performApprovedRecovery({
-            agent,
-            run: this.getRun(run.id),
-            incidentId: recovered.incidentId,
-            failureType: recovered.failureType,
-          });
-          if (afterApprove.action === "retry" || afterApprove.action === "restart_resume") {
-            pendingVerifyAttemptId = afterApprove.attemptId;
-            agent = this.getAgent(agent.id);
-            prompt =
-              afterApprove.action === "retry"
-                ? run.prompt
-                : "Resume the previous task after a runtime interruption. Continue from the latest workspace state.";
-            continue;
-          }
-          return;
-        }
-        if (recovered.action === "retry" || recovered.action === "restart_resume") {
-          pendingVerifyAttemptId = recovered.attemptId;
-          agent = this.getAgent(agent.id);
-          prompt =
-            recovered.action === "retry"
-              ? run.prompt
-              : "Resume the previous task after a runtime interruption. Continue from the latest workspace state.";
-          if (recovered.backoffMs) await sleep(recovered.backoffMs);
+        const continued = await this.applyRecoveryContinuation({
+          recovered,
+          agent,
+          run,
+          pendingVerifyAttemptId,
+          originalPrompt: run.prompt,
+        });
+        if (continued.outcome === "return") return;
+        pendingVerifyAttemptId = continued.pendingVerifyAttemptId;
+        agent = continued.agent;
+        turnPrompt = continued.turnPrompt;
+        if (continued.outcome === "continue") {
+          if (continued.backoffMs) await sleep(continued.backoffMs);
           continue;
         }
         return;
@@ -692,6 +746,310 @@ export class AgentService {
     }
 
     await this.failRun(agent.id, run.id, "Recovery attempt limit exceeded", false);
+  }
+
+  private effectiveSettings() {
+    return mergeSettings(
+      this.config,
+      this.store.snapshot().agentGuardSettings,
+    );
+  }
+
+  getAgentGuardSettings(): AgentGuardSettingsResponse {
+    return buildSettingsResponse(
+      this.config,
+      this.store.snapshot().agentGuardSettings,
+    );
+  }
+
+  async updateAgentGuardSettings(
+    patch: PatchAgentGuardSettingsInput,
+  ): Promise<AgentGuardSettingsResponse> {
+    return this.store.mutate((database) => {
+      const nextOverrides = applyPatch(database.agentGuardSettings, patch);
+      validateEffectiveRatios(this.config, nextOverrides);
+      database.agentGuardSettings = nextOverrides;
+      return buildSettingsResponse(this.config, database.agentGuardSettings);
+    });
+  }
+
+  async resetAgentGuardSettings(): Promise<AgentGuardSettingsResponse> {
+    return this.store.mutate((database) => {
+      database.agentGuardSettings = null;
+      return buildSettingsResponse(this.config, null);
+    });
+  }
+
+  private budgetEstimates(): BudgetEstimates {
+    const settings = this.effectiveSettings();
+    return {
+      softRatio: settings.softRatio,
+      strictRatio: settings.strictRatio,
+      estModelTokens: settings.estModelTokens,
+      estToolTokens: settings.estToolTokens,
+      charsPerToken: settings.charsPerToken,
+      nextTurnEstimate: settings.nextTurnEstimate,
+    };
+  }
+
+  private recentEventSummaries(runId: string): string[] {
+    return eventsForRun(this.store, runId)
+      .filter(
+        (event) =>
+          event.type === "MODEL_CALL" ||
+          event.type === "TOOL_CALL" ||
+          event.type === "ERROR" ||
+          event.type.startsWith("BUDGET_"),
+      )
+      .slice(-8)
+      .map((event) => summarizeTraceEvent(event));
+  }
+
+  private async prepareTurnPrompt(input: {
+    run: AgentRun;
+    originalPrompt: string;
+    turnPrompt: string;
+    estimates: BudgetEstimates;
+    lastEmittedTier: BudgetTier | "none";
+    preTurnBlockedOnce: boolean;
+  }): Promise<
+    | {
+        action: "ok";
+        turnPrompt: string;
+        promptForRunner: string;
+        lastEmittedTier: BudgetTier | "none";
+        preTurnBlockedOnce: boolean;
+      }
+    | {
+        action: "awaiting_approval";
+        incidentId: string;
+      }
+  > {
+    const { run, estimates } = input;
+    if (run.tokenBudget <= 0) {
+      return {
+        action: "ok",
+        turnPrompt: input.turnPrompt,
+        promptForRunner: input.turnPrompt,
+        lastEmittedTier: input.lastEmittedTier,
+        preTurnBlockedOnce: input.preTurnBlockedOnce,
+      };
+    }
+
+    let turnPrompt = input.turnPrompt;
+    let lastEmittedTier = input.lastEmittedTier;
+    let preTurnBlockedOnce = input.preTurnBlockedOnce;
+    const tier = budgetTier(run.tokensUsed, run.tokenBudget, estimates);
+
+    if (shouldBlockPreTurn(run.tokensUsed, run.tokenBudget, estimates)) {
+      if (preTurnBlockedOnce) {
+        await appendTraceEvent(this.store, {
+          runId: run.id,
+          type: "BUDGET_EXCEEDED",
+          status: "error",
+          metadata: {
+            reason: "pre_turn_block",
+            tokensUsed: run.tokensUsed,
+            tokenBudget: run.tokenBudget,
+          },
+        });
+        const recovered = await this.handleFailure({
+          agent: this.getAgent(run.agentId),
+          run,
+          injected: "budget_exceeded",
+          timedOut: false,
+          cancelled: false,
+          message:
+            "Pre-turn budget block: " + run.tokensUsed + "/" + run.tokenBudget,
+        });
+        if (recovered.action === "awaiting_approval") {
+          return { action: "awaiting_approval", incidentId: recovered.incidentId };
+        }
+        return {
+          action: "ok",
+          turnPrompt,
+          promptForRunner: turnPrompt,
+          lastEmittedTier,
+          preTurnBlockedOnce,
+        };
+      }
+      preTurnBlockedOnce = true;
+      turnPrompt = wrapPrompt({
+        prompt: input.originalPrompt,
+        tokensUsed: run.tokensUsed,
+        tokenBudget: run.tokenBudget,
+        tier: "strict",
+        recentEventSummaries: this.recentEventSummaries(run.id),
+      });
+      await appendTraceEvent(this.store, {
+        runId: run.id,
+        type: "BUDGET_COMPRESSED",
+        status: "ok",
+        metadata: { reason: "pre_turn_block", tier: "strict" },
+      });
+      return {
+        action: "ok",
+        turnPrompt,
+        promptForRunner: turnPrompt,
+        lastEmittedTier: "strict",
+        preTurnBlockedOnce,
+      };
+    }
+
+    if (tier !== "normal" && lastEmittedTier !== tier) {
+      await appendTraceEvent(this.store, {
+        runId: run.id,
+        type: "BUDGET_SOFT_LIMIT",
+        status: "ok",
+        metadata: {
+          tier,
+          tokensUsed: run.tokensUsed,
+          tokenBudget: run.tokenBudget,
+        },
+      });
+      lastEmittedTier = tier;
+    }
+
+    const promptForRunner = wrapPrompt({
+      prompt: turnPrompt,
+      tokensUsed: run.tokensUsed,
+      tokenBudget: run.tokenBudget,
+      tier,
+      recentEventSummaries: this.recentEventSummaries(run.id),
+    });
+    return {
+      action: "ok",
+      turnPrompt,
+      promptForRunner,
+      lastEmittedTier,
+      preTurnBlockedOnce,
+    };
+  }
+
+  private async applyRecoveryContinuation(input: {
+    recovered:
+      | { action: "done" }
+      | {
+          action: "retry" | "restart_resume" | "compress_resume";
+          attemptId: string;
+          backoffMs: number;
+        }
+      | {
+          action: "awaiting_approval";
+          incidentId: string;
+          failureType: import("./types.js").FailureType;
+        };
+    agent: Agent;
+    run: AgentRun;
+    pendingVerifyAttemptId: string | null;
+    originalPrompt: string;
+  }): Promise<{
+    outcome: "continue" | "return";
+    agent: Agent;
+    turnPrompt: string;
+    pendingVerifyAttemptId: string | null;
+    backoffMs?: number;
+  }> {
+    const { recovered, run, originalPrompt } = input;
+    let agent = input.agent;
+    let pendingVerifyAttemptId = input.pendingVerifyAttemptId;
+
+    if (recovered.action === "awaiting_approval") {
+      const decision = await this.waitForApproval(run.id, recovered.incidentId);
+      if (decision === "abort") {
+        await abortIncident(
+          this.store,
+          recovered.incidentId,
+          "Operator denied recovery",
+        );
+        await this.failRun(agent.id, run.id, "Recovery denied by operator", false);
+        return {
+          outcome: "return",
+          agent,
+          turnPrompt: originalPrompt,
+          pendingVerifyAttemptId,
+        };
+      }
+      if (recovered.failureType === "budget_exceeded") {
+        await this.raiseTokenBudget(run.id, recovered.incidentId);
+        return {
+          outcome: "continue",
+          agent: this.getAgent(agent.id),
+          turnPrompt: originalPrompt,
+          pendingVerifyAttemptId: null,
+        };
+      }
+      const afterApprove = await this.performApprovedRecovery({
+        agent,
+        run: this.getRun(run.id),
+        incidentId: recovered.incidentId,
+        failureType: recovered.failureType,
+      });
+      if (
+        afterApprove.action === "retry" ||
+        afterApprove.action === "restart_resume" ||
+        afterApprove.action === "compress_resume"
+      ) {
+        return {
+          outcome: "continue",
+          agent: this.getAgent(agent.id),
+          turnPrompt: this.promptForRecoveryAction(afterApprove.action, originalPrompt, run.id),
+          pendingVerifyAttemptId: afterApprove.attemptId,
+        };
+      }
+      return {
+        outcome: "return",
+        agent,
+        turnPrompt: originalPrompt,
+        pendingVerifyAttemptId,
+      };
+    }
+
+    if (
+      recovered.action === "retry" ||
+      recovered.action === "restart_resume" ||
+      recovered.action === "compress_resume"
+    ) {
+      if (recovered.action === "compress_resume") {
+        await appendTraceEvent(this.store, {
+          runId: run.id,
+          type: "BUDGET_COMPRESSED",
+          status: "ok",
+          metadata: { reason: "compress_resume" },
+        });
+        return {
+          outcome: "continue",
+          agent: this.getAgent(agent.id),
+          turnPrompt: originalPrompt,
+          pendingVerifyAttemptId: recovered.attemptId,
+          backoffMs: recovered.backoffMs,
+        };
+      }
+      return {
+        outcome: "continue",
+        agent: this.getAgent(agent.id),
+        turnPrompt: this.promptForRecoveryAction(recovered.action, originalPrompt, run.id),
+        pendingVerifyAttemptId: recovered.attemptId,
+        backoffMs: recovered.backoffMs,
+      };
+    }
+
+    return {
+      outcome: "return",
+      agent,
+      turnPrompt: originalPrompt,
+      pendingVerifyAttemptId,
+    };
+  }
+
+  private promptForRecoveryAction(
+    action: "retry" | "restart_resume" | "compress_resume",
+    originalPrompt: string,
+    _runId: string,
+  ): string {
+    if (action === "retry") return originalPrompt;
+    if (action === "compress_resume") return originalPrompt;
+    return "Resume the previous task after a runtime interruption. Continue from the latest workspace state.";
   }
 
   private async checkpointAfterSpan(
@@ -731,9 +1089,14 @@ export class AgentService {
     timedOut: boolean;
     cancelled: boolean;
     message: string;
+    budgetProjectedExceeded?: boolean;
   }): Promise<
     | { action: "done" }
-    | { action: "retry" | "restart_resume"; attemptId: string; backoffMs: number }
+    | {
+        action: "retry" | "restart_resume" | "compress_resume";
+        attemptId: string;
+        backoffMs: number;
+      }
     | {
         action: "awaiting_approval";
         incidentId: string;
@@ -752,6 +1115,9 @@ export class AgentService {
       timedOut: input.timedOut,
       cancelled: input.cancelled,
       budgetExceeded: input.injected === "budget_exceeded",
+      budgetProjectedExceeded:
+        input.budgetProjectedExceeded ||
+        input.injected === "budget_projected_exceeded",
       message: input.message,
     });
     const incident = await openIncident(this.store, {
@@ -787,11 +1153,40 @@ export class AgentService {
       };
     }
 
+    if (failureType === "budget_projected_exceeded") {
+      if (
+        shouldAbortAfterAttempts(
+          failureType,
+          priorAttempts,
+          this.effectiveSettings().maxCompressRecoveries,
+        )
+      ) {
+        await requestApproval(
+          this.store,
+          incident,
+          "Budget compress recoveries exhausted; approve to raise budget or abort",
+        );
+        return {
+          action: "awaiting_approval",
+          incidentId: incident.id,
+          failureType: "budget_exceeded",
+        };
+      }
+      return this.startCheckpointedRecovery({
+        agent: input.agent,
+        run: input.run,
+        incident,
+        strategy: "compress_resume",
+        priorAttempts,
+        errorEventId: errorEvent.id,
+      });
+    }
+
     if (
       failureType === "runtime_crash" &&
       requiresApprovalForCrash(
         priorCrashRecoveries,
-        this.config.agentGuardRequireApprovalAfterCrashes,
+        this.effectiveSettings().requireApprovalAfterCrashes,
       )
     ) {
       await requestApproval(
@@ -806,7 +1201,14 @@ export class AgentService {
       };
     }
 
-    if (strategy === "abort" || shouldAbortAfterAttempts(failureType, priorAttempts)) {
+    if (
+      strategy === "abort" ||
+      shouldAbortAfterAttempts(
+        failureType,
+        priorAttempts,
+        this.effectiveSettings().maxCompressRecoveries,
+      )
+    ) {
       await abortIncident(
         this.store,
         incident.id,
@@ -829,7 +1231,11 @@ export class AgentService {
       return { action: "done" };
     }
 
-    if (strategy === "restart_resume" || strategy === "retry") {
+    if (
+      strategy === "restart_resume" ||
+      strategy === "retry" ||
+      strategy === "compress_resume"
+    ) {
       return this.startCheckpointedRecovery({
         agent: input.agent,
         run: input.run,
@@ -848,12 +1254,16 @@ export class AgentService {
     agent: Agent;
     run: AgentRun;
     incident: Incident;
-    strategy: "retry" | "restart_resume";
+    strategy: "retry" | "restart_resume" | "compress_resume";
     priorAttempts: number;
     errorEventId: string;
   }): Promise<
     | { action: "done" }
-    | { action: "retry" | "restart_resume"; attemptId: string; backoffMs: number }
+    | {
+        action: "retry" | "restart_resume" | "compress_resume";
+        attemptId: string;
+        backoffMs: number;
+      }
   > {
     const checkpoint = this.latestCheckpoint(input.run.id);
     if (!checkpoint) {
@@ -913,7 +1323,11 @@ export class AgentService {
     failureType: import("./types.js").FailureType;
   }): Promise<
     | { action: "done" }
-    | { action: "retry" | "restart_resume"; attemptId: string; backoffMs: number }
+    | {
+        action: "retry" | "restart_resume" | "compress_resume";
+        attemptId: string;
+        backoffMs: number;
+      }
   > {
     const incident = this.store
       .snapshot()
@@ -948,7 +1362,7 @@ export class AgentService {
       const incident = database.incidents.find((item) => item.id === incidentId);
       if (storedRun) {
         storedRun.tokenBudget =
-          storedRun.tokensUsed + this.config.agentGuardTokenBudget;
+          storedRun.tokensUsed + this.effectiveSettings().tokenBudget;
         storedRun.pendingApprovalIncidentId = null;
         storedRun.status = "running";
       }

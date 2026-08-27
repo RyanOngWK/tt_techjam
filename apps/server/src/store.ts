@@ -11,6 +11,7 @@ const emptyDatabase = (): Database => ({
   incidents: [],
   recoveryAttempts: [],
   checkpoints: [],
+  agentGuardSettings: null,
 });
 
 function migrateDatabase(raw: unknown): Database {
@@ -39,6 +40,10 @@ function migrateDatabase(raw: unknown): Database {
     incidents: parsed.incidents ?? [],
     recoveryAttempts: parsed.recoveryAttempts ?? [],
     checkpoints: parsed.checkpoints ?? [],
+    agentGuardSettings:
+      parsed.agentGuardSettings && typeof parsed.agentGuardSettings === "object"
+        ? parsed.agentGuardSettings
+        : null,
   };
 }
 

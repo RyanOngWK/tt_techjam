@@ -10,6 +10,8 @@ export function selectStrategy(failureType: FailureType): RecoveryStrategy {
       return "retry";
     case "runtime_crash":
       return "restart_resume";
+    case "budget_projected_exceeded":
+      return "compress_resume";
     case "budget_exceeded":
     case "unknown":
     default:
@@ -20,8 +22,12 @@ export function selectStrategy(failureType: FailureType): RecoveryStrategy {
 export function shouldAbortAfterAttempts(
   failureType: FailureType,
   attemptCountForStrategy: number,
+  maxCompressRecoveries = 2,
 ): boolean {
   if (failureType === "unknown" || failureType === "budget_exceeded") return true;
+  if (failureType === "budget_projected_exceeded") {
+    return attemptCountForStrategy >= maxCompressRecoveries;
+  }
   if (failureType === "runtime_crash") {
     return attemptCountForStrategy >= MAX_CRASH_RESTARTS;
   }

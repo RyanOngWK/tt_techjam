@@ -50,6 +50,17 @@ const envSchema = z.object({
     .int()
     .min(1)
     .default(2),
+  AGENTGUARD_BUDGET_SOFT_RATIO: z.coerce.number().min(0).max(1).default(0.5),
+  AGENTGUARD_BUDGET_STRICT_RATIO: z.coerce.number().min(0).max(1).default(0.85),
+  AGENTGUARD_BUDGET_EST_MODEL_TOKENS: z.coerce.number().int().min(0).default(2000),
+  AGENTGUARD_BUDGET_EST_TOOL_TOKENS: z.coerce.number().int().min(0).default(1000),
+  AGENTGUARD_BUDGET_CHARS_PER_TOKEN: z.coerce.number().positive().default(4),
+  AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE: z.coerce.number().int().min(0).default(8000),
+  AGENTGUARD_BUDGET_MAX_COMPRESS_RECOVERIES: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(2),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 
@@ -96,6 +107,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     agentGuardTokenBudget: env.AGENTGUARD_TOKEN_BUDGET,
     agentGuardRequireApprovalAfterCrashes:
       env.AGENTGUARD_REQUIRE_APPROVAL_AFTER_CRASHES,
+    agentGuardBudgetSoftRatio: env.AGENTGUARD_BUDGET_SOFT_RATIO,
+    agentGuardBudgetStrictRatio: env.AGENTGUARD_BUDGET_STRICT_RATIO,
+    agentGuardBudgetEstModelTokens: env.AGENTGUARD_BUDGET_EST_MODEL_TOKENS,
+    agentGuardBudgetEstToolTokens: env.AGENTGUARD_BUDGET_EST_TOOL_TOKENS,
+    agentGuardBudgetCharsPerToken: env.AGENTGUARD_BUDGET_CHARS_PER_TOKEN,
+    agentGuardBudgetNextTurnEstimate: env.AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE,
+    agentGuardBudgetMaxCompressRecoveries:
+      env.AGENTGUARD_BUDGET_MAX_COMPRESS_RECOVERIES,
     nodeEnv: env.NODE_ENV,
   };
 }

@@ -16,6 +16,9 @@ Requirements:
 ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
 ```
 
+`npm run poc` loads repo `.env` for Ark keys and URL, but **always** uses host
+paths for data (not Compose `/app/*` paths from `.env`).
+
 Open <http://localhost:3000>. Press `Ctrl+C` to stop the server and remove this
 instance's remaining Runtime containers.
 
