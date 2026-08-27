@@ -33,6 +33,8 @@ export type EventType =
   | "CHECKPOINT_CREATED"
   | "ERROR"
   | "INCIDENT_OPENED"
+  | "DIAGNOSIS_ISSUED"
+  | "DIAGNOSIS_VERDICT"
   | "RECOVERY_STARTED"
   | "RECOVERY_COMPLETED"
   | "RECOVERY_FAILED"
@@ -48,6 +50,12 @@ export type EventType =
   | "BUDGET_RAISED";
 export type EventStatus = "ok" | "error" | "running";
 export type Severity = "low" | "medium" | "high";
+export type DiagnosisStatus =
+  | "issued"
+  | "acted"
+  | "awaiting_approval"
+  | "verified"
+  | "aborted";
 export type InjectFailType =
   | "runtime_crash"
   | "tool_timeout"
@@ -134,6 +142,43 @@ export interface RecoveryAttempt {
   error: string | null;
 }
 
+export interface DiagnosisEvidence {
+  signal: string;
+  value: string;
+  matched: string;
+}
+
+export interface DiagnosisStateDelta {
+  checkpointId: string;
+  workspaceFiles: number;
+  codexThreadReattached: boolean;
+  backoffMs: number | null;
+  tokensUsed: number;
+  tokenBudget: number;
+  degraded: boolean;
+}
+
+export interface DiagnosisRecord {
+  id: string;
+  runId: string;
+  incidentId: string;
+  failureType: FailureType;
+  severity: Severity;
+  summary: string;
+  rootCause: string;
+  confidence: number;
+  evidence: DiagnosisEvidence[];
+  strategy: RecoveryStrategy | null;
+  strategyRationale: string | null;
+  stateDelta: DiagnosisStateDelta | null;
+  status: DiagnosisStatus;
+  signature: string;
+  recurrenceCount: number;
+  suggestions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Checkpoint {
   id: string;
   runId: string;
@@ -175,13 +220,14 @@ export interface AgentGuardSettingsResponse {
 }
 
 export interface Database {
-  version: 2;
+  version: 3;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
   events: TraceEvent[];
   incidents: Incident[];
   recoveryAttempts: RecoveryAttempt[];
+  diagnoses: DiagnosisRecord[];
   checkpoints: Checkpoint[];
   agentGuardSettings: AgentGuardSettingsOverrides | null;
 }

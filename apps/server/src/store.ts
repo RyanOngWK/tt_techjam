@@ -3,13 +3,14 @@ import path from "node:path";
 import type { AgentRun, Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 2,
+  version: 3,
   agents: [],
   messages: [],
   runs: [],
   events: [],
   incidents: [],
   recoveryAttempts: [],
+  diagnoses: [],
   checkpoints: [],
   agentGuardSettings: null,
 });
@@ -32,13 +33,14 @@ function migrateDatabase(raw: unknown): Database {
         : run.pendingApprovalIncidentId,
   }));
   return {
-    version: 2,
+    version: 3,
     agents: parsed.agents,
     messages: parsed.messages ?? [],
     runs,
     events: parsed.events ?? [],
     incidents: parsed.incidents ?? [],
     recoveryAttempts: parsed.recoveryAttempts ?? [],
+    diagnoses: parsed.diagnoses ?? [],
     checkpoints: parsed.checkpoints ?? [],
     agentGuardSettings:
       parsed.agentGuardSettings && typeof parsed.agentGuardSettings === "object"
@@ -58,7 +60,7 @@ export class JsonStore {
     try {
       const raw = await readFile(this.filePath, "utf8");
       this.data = migrateDatabase(JSON.parse(raw));
-      if ((JSON.parse(raw) as { version?: number }).version !== 2) {
+      if ((JSON.parse(raw) as { version?: number }).version !== 3) {
         await this.persist();
       }
     } catch (error) {

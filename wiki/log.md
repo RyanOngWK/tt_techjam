@@ -1,5 +1,17 @@
 # Wiki Log
 
+## [2026-08-27] update | Automated diagnosis
+
+Added deterministic diagnosis to AgentGuard: `diagnostic.ts` issues a
+`DiagnosisRecord` per incident (root cause, evidence, confidence, failure
+signature + recurrence, template suggestions), DB v3 `diagnoses` column,
+`GET /api/runs/:id/diagnoses`, verdict updates through the recovery lifecycle
+(`acted` → `verified`/`aborted`/`awaiting_approval`, `DIAGNOSIS_ISSUED` /
+`DIAGNOSIS_VERDICT` events), and a diagnosis card in the AgentGuard window that
+also replaces the static "recovering…" text. Covered by `diagnostic.test.ts`
+and integration tests. Updated [agentguard.md](agentguard.md) and
+[api-and-data.md](api-and-data.md).
+
 ## [2026-08-27] ingest | Global AgentGuard settings
 
 Runtime policy overrides persisted in JsonStore (`agentGuardSettings`);

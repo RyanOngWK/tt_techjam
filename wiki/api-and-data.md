@@ -3,9 +3,11 @@
 ## HTTP Surface
 
 The API exposes health and authentication discovery, system information, agent
-CRUD and lifecycle actions, messages, agent-scoped run history, and individual
-run lookup. Message submission returns `202 Accepted` because execution is
-asynchronous. Request payloads and path IDs are validated with Zod.
+CRUD and lifecycle actions, messages, agent-scoped run history, individual
+run lookup, and AgentGuard evidence: trace events, incidents, recovery
+attempts, and automated diagnoses. Message submission returns `202 Accepted`
+because execution is asynchronous. Request payloads and path IDs are validated
+with Zod.
 
 Source: [Fastify application](../apps/server/src/app.ts)
 

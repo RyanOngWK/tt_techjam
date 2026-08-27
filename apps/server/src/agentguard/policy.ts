@@ -19,6 +19,26 @@ export function selectStrategy(failureType: FailureType): RecoveryStrategy {
   }
 }
 
+export function strategyRationaleFor(
+  failureType: FailureType,
+  strategy: RecoveryStrategy,
+): string {
+  switch (strategy) {
+    case "retry":
+      return "The failure looks transient (timeout or provider blip), so AgentGuard retries the same prompt without changing state.";
+    case "restart_resume":
+      return "A runtime crash is not safely retryable; AgentGuard restores the latest checkpoint and resumes the Codex session from there.";
+    case "compress_resume":
+      return "The next turn would exceed the remaining token budget, so AgentGuard compresses context and resumes within budget.";
+    case "abort":
+      return failureType === "unknown"
+        ? "No known failure signature matched, so AgentGuard will not guess a recovery and aborts instead."
+        : "No safe automatic recovery exists for this failure class, so AgentGuard aborts and alerts the operator.";
+    default:
+      return "No recovery applied.";
+  }
+}
+
 export function shouldAbortAfterAttempts(
   failureType: FailureType,
   attemptCountForStrategy: number,

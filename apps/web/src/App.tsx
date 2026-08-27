@@ -13,6 +13,7 @@ import type {
   Agent,
   AgentRun,
   AgentGuardSettingsEffective,
+  DiagnosisRecord,
   Incident,
   Message,
   RecoveryAttempt,
@@ -72,6 +73,7 @@ export default function App() {
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [recoveries, setRecoveries] = useState<RecoveryAttempt[]>([]);
+  const [diagnoses, setDiagnoses] = useState<DiagnosisRecord[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -160,6 +162,7 @@ export default function App() {
     setTraceEvents([]);
     setIncidents([]);
     setRecoveries([]);
+    setDiagnoses([]);
     setShowSettings(false);
     setAgentGuardOpen(false);
     setAgentGuardDismissedRunId(null);
@@ -383,15 +386,18 @@ export default function App() {
   };
 
   const refreshAgentGuard = useCallback(async (runId: string) => {
-    const [eventsResult, incidentsResult, recoveriesResult] = await Promise.all([
-      api.events(runId),
-      api.incidents(runId),
-      api.recoveries(runId),
-    ]);
+    const [eventsResult, incidentsResult, recoveriesResult, diagnosesResult] =
+      await Promise.all([
+        api.events(runId),
+        api.incidents(runId),
+        api.recoveries(runId),
+        api.diagnoses(runId),
+      ]);
     if (!mountedRef.current) return;
     setTraceEvents(eventsResult.events);
     setIncidents(incidentsResult.incidents);
     setRecoveries(recoveriesResult.recoveries);
+    setDiagnoses(diagnosesResult.diagnoses);
   }, []);
 
   const pollRun = async (runId: string, agentId: string) => {
@@ -450,6 +456,11 @@ export default function App() {
     );
     return open?.eventId ?? null;
   }, [incidents]);
+
+  const latestDiagnosis = useMemo(
+    () => diagnoses[0] ?? null,
+    [diagnoses],
+  );
 
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -793,11 +804,24 @@ export default function App() {
                     </div>
                     <div className="thinking-row">
                       <Spinner />
-                      {activeRun.status === "recovering"
-                        ? "Middleware is applying a recovery policy…"
-                        : activeRun.status === "awaiting_approval"
-                          ? "Approve or abort in the AgentGuard window…"
-                          : "Codex is reading, editing, or running commands…"}
+                      {activeRun.status === "recovering" ? (
+                        latestDiagnosis ? (
+                          <>
+                            <span>{latestDiagnosis.summary}</span>
+                            {latestDiagnosis.strategyRationale ? (
+                              <em className="diagnosis-inline">
+                                {latestDiagnosis.strategyRationale}
+                              </em>
+                            ) : null}
+                          </>
+                        ) : (
+                          "Middleware is applying a recovery policy…"
+                        )
+                      ) : activeRun.status === "awaiting_approval" ? (
+                        "Approve or abort in the AgentGuard window…"
+                      ) : (
+                        "Codex is reading, editing, or running commands…"
+                      )}
                     </div>
                   </article>
                 )}
@@ -1047,6 +1071,84 @@ export default function App() {
             </div>
           ) : null}
           <div className="agentguard-body">
+            {latestDiagnosis ? (
+              <div className="diagnosis-card">
+                <div className="diagnosis-card-head">
+                  <strong>Diagnosis</strong>
+                  <span className={"diagnosis-status diagnosis-status-" + latestDiagnosis.status}>
+                    {latestDiagnosis.status}
+                  </span>
+                  <span className="diagnosis-confidence">
+                    {Math.round(latestDiagnosis.confidence * 100)}% confidence
+                  </span>
+                </div>
+                <p className="diagnosis-summary">{latestDiagnosis.summary}</p>
+                <p className="diagnosis-root-cause">{latestDiagnosis.rootCause}</p>
+                {latestDiagnosis.evidence.length > 0 ? (
+                  <ul className="diagnosis-evidence">
+                    {latestDiagnosis.evidence.map((item) => (
+                      <li key={item.signal}>
+                        <code>{item.signal}</code>
+                        <span>
+                          {item.value}
+                          {item.matched ? " — " + item.matched : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {latestDiagnosis.strategy ? (
+                  <p className="diagnosis-strategy">
+                    <strong>Action: {latestDiagnosis.strategy}</strong>
+                    {latestDiagnosis.strategyRationale ? (
+                      <span>{latestDiagnosis.strategyRationale}</span>
+                    ) : null}
+                  </p>
+                ) : null}
+                {latestDiagnosis.stateDelta ? (
+                  <ul className="diagnosis-delta">
+                    <li>
+                      Checkpoint <code>{latestDiagnosis.stateDelta.checkpointId}</code> ·{" "}
+                      {latestDiagnosis.stateDelta.workspaceFiles} workspace files restored
+                    </li>
+                    <li>
+                      Session{" "}
+                      {latestDiagnosis.stateDelta.codexThreadReattached
+                        ? "reattached"
+                        : "not resumed"}
+                      {latestDiagnosis.stateDelta.backoffMs
+                        ? " · backoff " + latestDiagnosis.stateDelta.backoffMs + "ms"
+                        : ""}
+                    </li>
+                    <li>
+                      Budget {latestDiagnosis.stateDelta.tokensUsed} /{" "}
+                      {latestDiagnosis.stateDelta.tokenBudget} tokens
+                      {latestDiagnosis.stateDelta.degraded
+                        ? " · degraded mode (context compressed)"
+                        : ""}
+                    </li>
+                  </ul>
+                ) : null}
+                {latestDiagnosis.suggestions.length > 0 ? (
+                  <ul className="diagnosis-suggestions">
+                    {latestDiagnosis.suggestions.map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {latestDiagnosis.recurrenceCount > 0 ? (
+                  <p className="diagnosis-recurrence">
+                    Signature <code>{latestDiagnosis.signature}</code> · recurring, this run
+                    has seen it {latestDiagnosis.recurrenceCount + 1} times
+                  </p>
+                ) : (
+                  <p className="diagnosis-recurrence">
+                    Signature <code>{latestDiagnosis.signature}</code> · first occurrence in
+                    this run
+                  </p>
+                )}
+              </div>
+            ) : null}
             <div className="agentguard-columns">
               <div className="agentguard-column">
                 <strong>Timeline</strong>

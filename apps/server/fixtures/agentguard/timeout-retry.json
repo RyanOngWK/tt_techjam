@@ -4,7 +4,9 @@
     "TOOL_CALL",
     "ERROR",
     "INCIDENT_OPENED",
+    "DIAGNOSIS_ISSUED",
     "RECOVERY_STARTED",
-    "ALERT"
+    "ALERT",
+    "DIAGNOSIS_VERDICT"
   ]
 }

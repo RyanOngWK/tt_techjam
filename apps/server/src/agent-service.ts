@@ -13,15 +13,18 @@ import {
 } from "./agentguard/budget-policy.js";
 import {
   createWorkspaceCheckpoint,
+  listSnapshotEntries,
   pruneCheckpoints,
   restoreWorkspaceCheckpoint,
 } from "./agentguard/checkpoint.js";
 import { classifyFailure, severityFor, totalTokens } from "./agentguard/failure-detector.js";
+import { diagnosesForRun, issueDiagnosis, updateDiagnosis } from "./agentguard/diagnostic.js";
 import {
   requiresApprovalForCrash,
   retryBackoffMs,
   selectStrategy,
   shouldAbortAfterAttempts,
+  strategyRationaleFor,
 } from "./agentguard/policy.js";
 import {
   abortIncident,
@@ -48,6 +51,8 @@ import type {
   ApprovalDecision,
   Checkpoint,
   CreateAgentInput,
+  DiagnosisRecord,
+  DiagnosisStateDelta,
   Incident,
   InjectFailType,
   Message,
@@ -210,6 +215,7 @@ export class AgentService {
       database.recoveryAttempts = database.recoveryAttempts.filter(
         (item) => !runIds.has(item.runId),
       );
+      database.diagnoses = database.diagnoses.filter((item) => !runIds.has(item.runId));
       database.checkpoints = database.checkpoints.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
@@ -267,6 +273,11 @@ export class AgentService {
       .snapshot()
       .recoveryAttempts.filter((item) => item.runId === runId)
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  }
+
+  getDiagnoses(runId: string): DiagnosisRecord[] {
+    this.getRun(runId);
+    return diagnosesForRun(this.store, runId);
   }
 
   getCheckpoints(runId: string): Checkpoint[] {
@@ -1128,6 +1139,25 @@ export class AgentService {
     });
 
     const strategy = selectStrategy(failureType);
+    await issueDiagnosis(this.store, {
+      runId: input.run.id,
+      incidentId: incident.id,
+      signals: {
+        injected: input.injected,
+        timedOut: input.timedOut,
+        cancelled: input.cancelled,
+        budgetExceeded:
+          input.injected === "budget_exceeded" || failureType === "budget_exceeded",
+        budgetProjectedExceeded:
+          input.budgetProjectedExceeded ||
+          input.injected === "budget_projected_exceeded",
+        message: input.message,
+        tokensUsed: input.run.tokensUsed,
+        tokenBudget: input.run.tokenBudget,
+      },
+      strategy,
+      strategyRationale: strategyRationaleFor(failureType, strategy),
+    });
     const priorAttempts = this.store
       .snapshot()
       .recoveryAttempts.filter(
@@ -1301,6 +1331,23 @@ export class AgentService {
           run.pendingApprovalIncidentId = null;
         }
       });
+      const workspaceFiles = await listSnapshotEntries(
+        checkpoint.workspaceSnapshotRef,
+      ).catch(() => []);
+      const restoredRun = this.getRun(input.run.id);
+      const stateDelta: DiagnosisStateDelta = {
+        checkpointId: checkpoint.id,
+        workspaceFiles: workspaceFiles.length,
+        codexThreadReattached: checkpoint.codexThreadId !== null,
+        backoffMs: retryBackoffMs(input.priorAttempts + 1),
+        tokensUsed: restoredRun.tokensUsed,
+        tokenBudget: restoredRun.tokenBudget,
+        degraded: input.strategy === "compress_resume",
+      };
+      await updateDiagnosis(this.store, input.incident.id, {
+        status: "acted",
+        stateDelta,
+      });
       await completeRecoveryAttempt(this.store, attempt.id, "succeeded");
       return {
         action: input.strategy,
@@ -1377,6 +1424,7 @@ export class AgentService {
       status: "ok",
       metadata: { incidentId, raisedBudget: true },
     });
+    await updateDiagnosis(this.store, incidentId, { status: "verified" });
   }
 
   private waitForApproval(

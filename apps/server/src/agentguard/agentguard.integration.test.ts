@@ -146,6 +146,137 @@ describe("AgentGuard integration", () => {
     expect(calls).toBeGreaterThanOrEqual(3);
   });
 
+  it("issues a diagnosis that progresses through the crash-recovery lifecycle", async () => {
+    let calls = 0;
+    let rejectFirst!: (error: Error) => void;
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) {
+          return firstHang;
+        }
+        return {
+          output: "recovered",
+          threadId: request.threadId ?? "thread-2",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => {
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Diagnosed" });
+    await writeFile(path.join(agent.workspacePath, "work.txt"), "before", "utf8");
+    const { run } = await service.sendMessage(agent.id, "do work");
+    await expect
+      .poll(() => service.getEvents(run.id).some((e) => e.type === "CHECKPOINT_CREATED"))
+      .toBe(true);
+    await service.injectFailure(run.id, "runtime_crash");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    await expect.poll(() => service.getDiagnoses(run.id).length).toBe(1);
+    const diagnosis = service.getDiagnoses(run.id)[0];
+    expect(diagnosis.failureType).toBe("runtime_crash");
+    expect(diagnosis.severity).toBe("high");
+    expect(diagnosis.strategy).toBe("restart_resume");
+    expect(diagnosis.strategyRationale).toBeTruthy();
+    expect(diagnosis.evidence.length).toBeGreaterThan(0);
+    expect(diagnosis.rootCause).toBeTruthy();
+    expect(diagnosis.confidence).toBeGreaterThan(0);
+
+    await expect.poll(() => service.getDiagnoses(run.id)[0]?.status).toBe("verified");
+    const finalDiagnosis = service.getDiagnoses(run.id)[0];
+    expect(finalDiagnosis.stateDelta).not.toBeNull();
+    expect(finalDiagnosis.stateDelta?.checkpointId).toBeTruthy();
+    expect(finalDiagnosis.stateDelta?.workspaceFiles).toBeGreaterThanOrEqual(1);
+    expect(typeof finalDiagnosis.stateDelta?.codexThreadReattached).toBe("boolean");
+    expect(
+      service.getEvents(run.id).some((event) => event.type === "DIAGNOSIS_ISSUED"),
+    ).toBe(true);
+    expect(
+      service.getEvents(run.id).some((event) => event.type === "DIAGNOSIS_VERDICT"),
+    ).toBe(true);
+  });
+
+  it("marks a diagnosis aborted when retries are exhausted", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { note: "x" },
+        });
+        throw new Error("Codex timed out after 1000 ms");
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "DiagTimeout" });
+    const { run } = await service.sendMessage(agent.id, "slow tool");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    await expect.poll(() => service.getDiagnoses(run.id)[0]?.status).toBe("aborted");
+    expect(service.getDiagnoses(run.id)[0]?.failureType).toBe("tool_timeout");
+    expect(service.getDiagnoses(run.id).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("flags a diagnosis as awaiting approval on budget HITL and verifies after approve", async () => {
+    let calls = 0;
+    let rejectFirst!: (error: Error) => void;
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) {
+          return firstHang;
+        }
+        return {
+          output: "after-budget",
+          threadId: request.threadId ?? "thread-budget",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => {
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "DiagBudget" });
+    const { run } = await service.sendMessage(agent.id, "spend");
+    await expect
+      .poll(() => service.getEvents(run.id).some((e) => e.type === "CHECKPOINT_CREATED"))
+      .toBe(true);
+    await service.injectFailure(run.id, "budget_exceeded");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+    await expect.poll(() => service.getDiagnoses(run.id)[0]?.status).toBe(
+      "awaiting_approval",
+    );
+    expect(service.getDiagnoses(run.id)[0]?.failureType).toBe("budget_exceeded");
+    await service.resolveApproval(run.id, "approve");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    await expect.poll(() => service.getDiagnoses(run.id)[0]?.status).toBe("verified");
+  });
+
   it("redacts secrets from stored events", async () => {
     const runner: AgentRunner = {
       async run(request: RunnerRequest): Promise<RunnerResult> {

@@ -171,6 +171,11 @@ export async function createApp(
     return { recoveries: service.getRecoveries(id) };
   });
 
+  app.get("/api/runs/:id/diagnoses", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { diagnoses: service.getDiagnoses(id) };
+  });
+
   app.get("/api/runs/:id/checkpoints", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { checkpoints: service.getCheckpoints(id) };
