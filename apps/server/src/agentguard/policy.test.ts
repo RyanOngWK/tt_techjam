@@ -36,6 +36,7 @@ describe("policy", () => {
   it("maps failure types to strategies", () => {
     expect(selectStrategy("tool_timeout")).toBe("retry");
     expect(selectStrategy("runtime_crash")).toBe("restart_resume");
+    expect(selectStrategy("budget_projected_exceeded")).toBe("compress_resume");
     expect(selectStrategy("budget_exceeded")).toBe("abort");
     expect(selectStrategy("unknown")).toBe("abort");
   });
@@ -51,6 +52,12 @@ describe("policy", () => {
     expect(shouldAbortAfterAttempts("runtime_crash", 1)).toBe(true);
     expect(shouldAbortAfterAttempts("unknown", 0)).toBe(true);
     expect(shouldAbortAfterAttempts("budget_exceeded", 0)).toBe(true);
+    expect(shouldAbortAfterAttempts("budget_projected_exceeded", 1, 2)).toBe(
+      false,
+    );
+    expect(shouldAbortAfterAttempts("budget_projected_exceeded", 2, 2)).toBe(
+      true,
+    );
   });
 
   it("requires approval after the configured crash count", () => {

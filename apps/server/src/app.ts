@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { patchAgentGuardSettingsSchema } from "./agentguard/settings.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -71,6 +72,17 @@ export async function createApp(
   app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
 
   app.get("/api/system", async () => service.systemInfo());
+
+  app.get("/api/agentguard/settings", async () => service.getAgentGuardSettings());
+
+  app.patch("/api/agentguard/settings", async (request) => {
+    const body = patchAgentGuardSettingsSchema.parse(request.body);
+    return service.updateAgentGuardSettings(body);
+  });
+
+  app.post("/api/agentguard/settings/reset", async () =>
+    service.resetAgentGuardSettings(),
+  );
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
@@ -175,7 +187,12 @@ export async function createApp(
     const { id } = runIdParams.parse(request.params);
     const body = z
       .object({
-        type: z.enum(["runtime_crash", "tool_timeout", "budget_exceeded"]),
+        type: z.enum([
+          "runtime_crash",
+          "tool_timeout",
+          "budget_exceeded",
+          "budget_projected_exceeded",
+        ]),
       })
       .parse(request.body);
     return service.injectFailure(id, body.type);

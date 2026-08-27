@@ -260,14 +260,90 @@ describe("AgentGuard integration", () => {
     expect(service.getEvents(run.id).some((e) => e.type === "BUDGET_RAISED")).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
   });
+
+  it("auto-compresses on projected budget exceed without HITL", async () => {
+    let calls = 0;
+    let rejectFirst!: (error: Error) => void;
+    let secondPrompt = "";
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) {
+          return firstHang;
+        }
+        secondPrompt = request.prompt;
+        return {
+          output: "compressed-ok",
+          threadId: request.threadId ?? "thread-compress",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => {
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Compress" });
+    const { run } = await service.sendMessage(agent.id, "stay under budget");
+    await expect
+      .poll(() => service.getEvents(run.id).some((e) => e.type === "CHECKPOINT_CREATED"))
+      .toBe(true);
+    await service.injectFailure(run.id, "budget_projected_exceeded");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(service.getRun(run.id).status).not.toBe("awaiting_approval");
+    expect(service.getEvents(run.id).some((e) => e.type === "BUDGET_COMPRESSED")).toBe(
+      true,
+    );
+    expect(service.getRecoveries(run.id).some((r) => r.strategy === "compress_resume")).toBe(
+      true,
+    );
+    expect(secondPrompt).toContain("[AgentGuard budget control]");
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("applies patched token budget to new runs only", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        return {
+          output: "ok",
+          threadId: "thread-budget",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Budget" });
+    const first = await service.sendMessage(agent.id, "first");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+    const originalBudget = service.getRun(first.run.id).tokenBudget;
+
+    await service.updateAgentGuardSettings({ tokenBudget: 99_999 });
+    const second = await service.sendMessage(agent.id, "second");
+    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
+
+    expect(service.getRun(first.run.id).tokenBudget).toBe(originalBudget);
+    expect(service.getRun(second.run.id).tokenBudget).toBe(99_999);
+  });
 });
 
 describe("AgentGuard fixtures", () => {
   it("ships golden sequences", async () => {
     const { readFile } = await import("node:fs/promises");
     const fixturesRoot = path.resolve(
-      process.cwd(),
-      "fixtures/agentguard",
+      path.dirname(new URL(import.meta.url).pathname),
+      "../../fixtures/agentguard",
     );
     const crash = JSON.parse(
       await readFile(path.join(fixturesRoot, "crash-then-recover.json"), "utf8"),
@@ -277,5 +353,13 @@ describe("AgentGuard fixtures", () => {
     ) as { forbidden: string[] };
     expect(crash.events).toContain("RECOVERY_VERIFIED");
     expect(secrets.forbidden.length).toBeGreaterThan(0);
+    const soft = JSON.parse(
+      await readFile(path.join(fixturesRoot, "budget-soft-compress.json"), "utf8"),
+    ) as { events: string[] };
+    const hard = JSON.parse(
+      await readFile(path.join(fixturesRoot, "budget-hard-hitl.json"), "utf8"),
+    ) as { events: string[] };
+    expect(soft.events).toContain("BUDGET_COMPRESSED");
+    expect(hard.events).toContain("BUDGET_RAISED");
   });
 });

@@ -1,0 +1,11 @@
+{
+  "events": [
+    "RUN_STARTED",
+    "MODEL_CALL",
+    "BUDGET_EXCEEDED",
+    "APPROVAL_REQUESTED",
+    "APPROVAL_GRANTED",
+    "BUDGET_RAISED",
+    "RUN_COMPLETED"
+  ]
+}

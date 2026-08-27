@@ -1,6 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Incident, Message, RecoveryAttempt, SystemInfo, TraceEvent } from "./types";
+import {
+  clampRect,
+  loadGeometry,
+  resizeFromCorner,
+  saveGeometry,
+  type ResizeCorner,
+  type WindowGeometry,
+} from "./agentguard-window";
+import { AgentGuardSettingsModal } from "./AgentGuardSettingsModal";
+import type {
+  Agent,
+  AgentRun,
+  AgentGuardSettingsEffective,
+  Incident,
+  Message,
+  RecoveryAttempt,
+  SystemInfo,
+  TraceEvent,
+} from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -14,6 +32,12 @@ const emptyForm = {
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
 };
+
+const ACTIVE_RUN_STATUSES = ["queued", "running", "recovering", "awaiting_approval"] as const;
+
+function isActiveRunStatus(status: string): boolean {
+  return (ACTIVE_RUN_STATUSES as readonly string[]).includes(status);
+}
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -52,10 +76,35 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [agentGuardOpen, setAgentGuardOpen] = useState(false);
+  const [agentGuardDismissedRunId, setAgentGuardDismissedRunId] = useState<string | null>(
+    null,
+  );
+  const [showAgentGuardSettings, setShowAgentGuardSettings] = useState(false);
+  const [budgetPolicy, setBudgetPolicy] = useState<AgentGuardSettingsEffective | null>(
+    null,
+  );
+  const [windowGeometry, setWindowGeometry] = useState<WindowGeometry>(() => loadGeometry());
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const dragSession = useRef<
+    | {
+        mode: "move";
+        startX: number;
+        startY: number;
+        origin: WindowGeometry;
+      }
+    | {
+        mode: "resize";
+        corner: ResizeCorner;
+        startX: number;
+        startY: number;
+        origin: WindowGeometry;
+      }
+    | null
+  >(null);
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -81,7 +130,14 @@ export default function App() {
   }, []);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem)]);
+    await Promise.all([
+      refreshAgents(),
+      api.system().then(setSystem),
+      api
+        .getAgentGuardSettings()
+        .then((response) => setBudgetPolicy(response.effective))
+        .catch(() => undefined),
+    ]);
   }, [refreshAgents]);
 
   useEffect(() => {
@@ -105,6 +161,8 @@ export default function App() {
     setIncidents([]);
     setRecoveries([]);
     setShowSettings(false);
+    setAgentGuardOpen(false);
+    setAgentGuardDismissedRunId(null);
     if (!selectedId) {
       setMessages([]);
       return;
@@ -142,6 +200,120 @@ export default function App() {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
 
+  useEffect(() => {
+    if (!activeRun || !isActiveRunStatus(activeRun.status)) return;
+    if (agentGuardDismissedRunId === activeRun.id) return;
+    setAgentGuardOpen(true);
+  }, [activeRun, agentGuardDismissedRunId]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setWindowGeometry((current) => {
+        const next = clampRect(current);
+        saveGeometry(next);
+        return next;
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      const session = dragSession.current;
+      if (!session) return;
+      const dx = event.clientX - session.startX;
+      const dy = event.clientY - session.startY;
+      if (session.mode === "move") {
+        setWindowGeometry(
+          clampRect({
+            ...session.origin,
+            x: session.origin.x + dx,
+            y: session.origin.y + dy,
+          }),
+        );
+        return;
+      }
+      setWindowGeometry(
+        resizeFromCorner(session.origin, dx, dy, session.corner),
+      );
+    };
+    const onPointerUp = () => {
+      if (!dragSession.current) return;
+      const corner =
+        dragSession.current.mode === "resize" ? dragSession.current.corner : null;
+      dragSession.current = null;
+      document.body.classList.remove("agentguard-dragging");
+      if (corner) {
+        document.body.classList.remove("agentguard-resizing-" + corner);
+      }
+      setWindowGeometry((current) => {
+        const next = clampRect(current);
+        saveGeometry(next);
+        return next;
+      });
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, []);
+
+  const beginWindowDrag = (
+    event: React.PointerEvent,
+    mode: "move" | "resize",
+    corner?: ResizeCorner,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    if (mode === "move") {
+      dragSession.current = {
+        mode: "move",
+        startX: event.clientX,
+        startY: event.clientY,
+        origin: windowGeometry,
+      };
+    } else if (corner) {
+      dragSession.current = {
+        mode: "resize",
+        corner,
+        startX: event.clientX,
+        startY: event.clientY,
+        origin: windowGeometry,
+      };
+      document.body.classList.add("agentguard-resizing-" + corner);
+    }
+    document.body.classList.add("agentguard-dragging");
+  };
+
+  const closeAgentGuardWindow = () => {
+    setAgentGuardOpen(false);
+    if (activeRun) setAgentGuardDismissedRunId(activeRun.id);
+  };
+
+  const toggleAgentGuardWindow = () => {
+    setAgentGuardOpen((open) => {
+      const next = !open;
+      if (next) setAgentGuardDismissedRunId(null);
+      else if (activeRun) setAgentGuardDismissedRunId(activeRun.id);
+      return next;
+    });
+  };
+
+  const handleAgentGuardSettingsSaved = (response: {
+    effective: AgentGuardSettingsEffective;
+  }) => {
+    setBudgetPolicy(response.effective);
+    setSystem((current) =>
+      current
+        ? { ...current, agentGuardTokenBudget: response.effective.tokenBudget }
+        : current,
+    );
+  };
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -243,7 +415,11 @@ export default function App() {
   };
 
   const injectFailure = async (
-    type: "runtime_crash" | "tool_timeout" | "budget_exceeded",
+    type:
+      | "runtime_crash"
+      | "tool_timeout"
+      | "budget_exceeded"
+      | "budget_projected_exceeded",
   ) => {
     if (!activeRun) return;
     setError(null);
@@ -538,9 +714,37 @@ export default function App() {
                   <span className="eyebrow">Playground</span>
                   <h2>Build something with your Agent</h2>
                 </div>
-                <div className="session-info">
-                  <span className="pulse" />
-                  {selected.codexThreadId ? "Session connected" : "New session"}
+                <div className="playground-topbar-actions">
+                  <button
+                    type="button"
+                    className="button button-ghost"
+                    onClick={() => setShowAgentGuardSettings(true)}
+                  >
+                    Budget settings
+                  </button>
+                  {activeRun ? (
+                    <button
+                      type="button"
+                      className={
+                        "button button-ghost agentguard-toggle" +
+                        (agentGuardOpen ? " is-active" : "")
+                      }
+                      onClick={toggleAgentGuardWindow}
+                      aria-pressed={agentGuardOpen}
+                    >
+                      AgentGuard
+                      {incidents.some((item) => item.status === "aborted") ? (
+                        <span className="alert-badge">ALERT</span>
+                      ) : null}
+                      {activeRun.status === "awaiting_approval" ? (
+                        <span className="approval-badge">APPROVAL</span>
+                      ) : null}
+                    </button>
+                  ) : null}
+                  <div className="session-info">
+                    <span className="pulse" />
+                    {selected.codexThreadId ? "Session connected" : "New session"}
+                  </div>
                 </div>
               </div>
 
@@ -592,7 +796,7 @@ export default function App() {
                       {activeRun.status === "recovering"
                         ? "Middleware is applying a recovery policy…"
                         : activeRun.status === "awaiting_approval"
-                          ? "Approve or abort in the AgentGuard panel…"
+                          ? "Approve or abort in the AgentGuard window…"
                           : "Codex is reading, editing, or running commands…"}
                     </div>
                   </article>
@@ -630,172 +834,6 @@ export default function App() {
                 )}
                 <div ref={messageEnd} />
               </div>
-
-              {activeRun && (
-                <section className="agentguard-panel" aria-label="AgentGuard">
-                  <div className="agentguard-header">
-                    <div>
-                      <span className="eyebrow">AgentGuard</span>
-                      <h3>
-                        Run observability
-                        {incidents.some((item) => item.status === "aborted") ? (
-                          <span className="alert-badge">ALERT</span>
-                        ) : null}
-                        {activeRun.status === "awaiting_approval" ? (
-                          <span className="approval-badge">APPROVAL</span>
-                        ) : null}
-                      </h3>
-                    </div>
-                    <div className="agentguard-actions">
-                      <button
-                        type="button"
-                        className="button button-ghost"
-                        disabled={!["running", "recovering"].includes(activeRun.status)}
-                        onClick={() => void injectFailure("runtime_crash")}
-                      >
-                        Inject crash
-                      </button>
-                      <button
-                        type="button"
-                        className="button button-ghost"
-                        disabled={!["running", "recovering"].includes(activeRun.status)}
-                        onClick={() => void injectFailure("tool_timeout")}
-                      >
-                        Inject timeout
-                      </button>
-                      <button
-                        type="button"
-                        className="button button-ghost"
-                        disabled={!["running", "recovering"].includes(activeRun.status)}
-                        onClick={() => void injectFailure("budget_exceeded")}
-                      >
-                        Inject budget
-                      </button>
-                      <a
-                        className="button button-ghost"
-                        href={api.exportEventsUrl(activeRun.id)}
-                        download={`run-${activeRun.id}-events.json`}
-                      >
-                        Export JSON
-                      </a>
-                    </div>
-                  </div>
-                  <div className="agentguard-meta">
-                    <span>Status: {activeRun.status}</span>
-                    <span>
-                      Recoveries: {activeRun.recoveryAttemptCount ?? recoveries.length}
-                    </span>
-                    <span>
-                      Budget: {activeRun.tokensUsed ?? 0} / {activeRun.tokenBudget ?? "—"}{" "}
-                      tokens
-                    </span>
-                    {activeRun.usage ? (
-                      <span>
-                        Usage: in {activeRun.usage.inputTokens ?? 0} / out{" "}
-                        {activeRun.usage.outputTokens ?? 0}
-                      </span>
-                    ) : (
-                      <span>Usage: n/a</span>
-                    )}
-                  </div>
-                  {activeRun.status === "awaiting_approval" ? (
-                    <div className="agentguard-approval-bar">
-                      <span>Recovery paused — approve to continue or abort the run.</span>
-                      <div className="agentguard-actions">
-                        <button
-                          type="button"
-                          className="button button-primary"
-                          onClick={() => void resolveApproval("approve")}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          className="button button-ghost"
-                          onClick={() => void resolveApproval("abort")}
-                        >
-                          Abort
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                  <div className="agentguard-body">
-                    <div className="agentguard-columns">
-                      <div className="agentguard-column">
-                        <strong>Timeline</strong>
-                        <ul className="trace-list">
-                          {traceEvents.length === 0 ? (
-                            <li className="muted">No events yet</li>
-                          ) : (
-                            traceEvents.map((event) => (
-                              <li
-                                key={event.id}
-                                className={
-                                  event.id === failingEventId ? "trace-failing" : undefined
-                                }
-                                id={
-                                  event.id === failingEventId
-                                    ? "agentguard-failing-step"
-                                    : undefined
-                                }
-                              >
-                                <code>{event.type}</code>
-                                <span>
-                                  {event.status}
-                                  {event.id === failingEventId ? " · failing step" : ""}
-                                  {event.parentEventId ? " · child" : ""}
-                                </span>
-                                {event.error ? <em>{event.error}</em> : null}
-                              </li>
-                            ))
-                          )}
-                        </ul>
-                        {failingEventId ? (
-                          <button
-                            type="button"
-                            className="button button-ghost jump-failing"
-                            onClick={() => {
-                              document
-                                .getElementById("agentguard-failing-step")
-                                ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-                            }}
-                          >
-                            Jump to failing step
-                          </button>
-                        ) : null}
-                      </div>
-                      <div className="agentguard-column">
-                        <strong>Incidents</strong>
-                        <ul className="trace-list">
-                          {incidents.length === 0 ? (
-                            <li className="muted">None</li>
-                          ) : (
-                            incidents.map((incident) => (
-                              <li key={incident.id}>
-                                <code>{incident.failureType}</code>
-                                <span>{incident.status}</span>
-                              </li>
-                            ))
-                          )}
-                        </ul>
-                        <strong>Recoveries</strong>
-                        <ul className="trace-list">
-                          {recoveries.length === 0 ? (
-                            <li className="muted">None</li>
-                          ) : (
-                            recoveries.map((attempt) => (
-                              <li key={attempt.id}>
-                                <code>{attempt.strategy}</code>
-                                <span>{attempt.status}</span>
-                              </li>
-                            ))
-                          )}
-                        </ul>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              )}
 
               <form className="composer" onSubmit={sendMessage}>
                 <textarea
@@ -864,6 +902,248 @@ export default function App() {
         )}
       </main>
 
+      {activeRun && agentGuardOpen ? (
+        <section
+          className="agentguard-window"
+          role="dialog"
+          aria-label="AgentGuard"
+          style={{
+            left: windowGeometry.x,
+            top: windowGeometry.y,
+            width: windowGeometry.w,
+            height: windowGeometry.h,
+          }}
+        >
+          <div
+            className="agentguard-window-header"
+            onPointerDown={(event) => {
+              const target = event.target as HTMLElement;
+              if (target.closest("button, a")) return;
+              beginWindowDrag(event, "move");
+            }}
+          >
+            <div>
+              <span className="eyebrow">AgentGuard</span>
+              <h3>
+                Run observability
+                {incidents.some((item) => item.status === "aborted") ? (
+                  <span className="alert-badge">ALERT</span>
+                ) : null}
+                {activeRun.status === "awaiting_approval" ? (
+                  <span className="approval-badge">APPROVAL</span>
+                ) : null}
+              </h3>
+            </div>
+            <div className="agentguard-window-header-actions">
+              <div className="agentguard-actions">
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  disabled={!["running", "recovering"].includes(activeRun.status)}
+                  onClick={() => void injectFailure("runtime_crash")}
+                >
+                  Inject crash
+                </button>
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  disabled={!["running", "recovering"].includes(activeRun.status)}
+                  onClick={() => void injectFailure("tool_timeout")}
+                >
+                  Inject timeout
+                </button>
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  disabled={!["running", "recovering"].includes(activeRun.status)}
+                  onClick={() => void injectFailure("budget_exceeded")}
+                >
+                  Inject budget
+                </button>
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  disabled={!["running", "recovering"].includes(activeRun.status)}
+                  onClick={() => void injectFailure("budget_projected_exceeded")}
+                >
+                  Inject projected
+                </button>
+                <a
+                  className="button button-ghost"
+                  href={api.exportEventsUrl(activeRun.id)}
+                  download={`run-${activeRun.id}-events.json`}
+                >
+                  Export JSON
+                </a>
+              </div>
+              <button
+                type="button"
+                className="button button-ghost agentguard-settings-gear"
+                aria-label="AgentGuard policy settings"
+                title="AgentGuard policy settings"
+                onClick={() => setShowAgentGuardSettings(true)}
+              >
+                ⚙
+              </button>
+              <button
+                type="button"
+                className="agentguard-window-close"
+                aria-label="Close AgentGuard"
+                onClick={closeAgentGuardWindow}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <div className="agentguard-meta">
+            <span>Status: {activeRun.status}</span>
+            <span>
+              Recoveries: {activeRun.recoveryAttemptCount ?? recoveries.length}
+            </span>
+            <span>
+              Budget: {activeRun.tokensUsed ?? 0} / {activeRun.tokenBudget ?? "—"} tokens
+              {(() => {
+                const used = activeRun.tokensUsed ?? 0;
+                const budget = activeRun.tokenBudget ?? 0;
+                if (budget <= 0) return null;
+                const ratio = used / budget;
+                const softRatio = budgetPolicy?.softRatio ?? 0.5;
+                const strictRatio = budgetPolicy?.strictRatio ?? 0.85;
+                const tier =
+                  ratio >= strictRatio ? "strict" : ratio >= softRatio ? "soft" : "normal";
+                return tier === "normal" ? null : (
+                  <span className="approval-badge"> {tier}</span>
+                );
+              })()}
+            </span>
+            {activeRun.usage ? (
+              <span>
+                Usage: in {activeRun.usage.inputTokens ?? 0} / out{" "}
+                {activeRun.usage.outputTokens ?? 0}
+              </span>
+            ) : (
+              <span>Usage: n/a</span>
+            )}
+          </div>
+          {activeRun.status === "awaiting_approval" ? (
+            <div className="agentguard-approval-bar">
+              <span>Recovery paused — approve to continue or abort the run.</span>
+              <div className="agentguard-actions">
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={() => void resolveApproval("approve")}
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  onClick={() => void resolveApproval("abort")}
+                >
+                  Abort
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <div className="agentguard-body">
+            <div className="agentguard-columns">
+              <div className="agentguard-column">
+                <strong>Timeline</strong>
+                <ul className="trace-list">
+                  {traceEvents.length === 0 ? (
+                    <li className="muted">No events yet</li>
+                  ) : (
+                    traceEvents.map((event) => (
+                      <li
+                        key={event.id}
+                        className={
+                          event.id === failingEventId ? "trace-failing" : undefined
+                        }
+                        id={
+                          event.id === failingEventId
+                            ? "agentguard-failing-step"
+                            : undefined
+                        }
+                      >
+                        <code>{event.type}</code>
+                        <span>
+                          {event.status}
+                          {event.id === failingEventId ? " · failing step" : ""}
+                          {event.parentEventId ? " · child" : ""}
+                        </span>
+                        {event.error ? <em>{event.error}</em> : null}
+                      </li>
+                    ))
+                  )}
+                </ul>
+                {failingEventId ? (
+                  <button
+                    type="button"
+                    className="button button-ghost jump-failing"
+                    onClick={() => {
+                      document
+                        .getElementById("agentguard-failing-step")
+                        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                    }}
+                  >
+                    Jump to failing step
+                  </button>
+                ) : null}
+              </div>
+              <div className="agentguard-column">
+                <strong>Incidents</strong>
+                <ul className="trace-list">
+                  {incidents.length === 0 ? (
+                    <li className="muted">None</li>
+                  ) : (
+                    incidents.map((incident) => (
+                      <li key={incident.id}>
+                        <code>{incident.failureType}</code>
+                        <span>{incident.status}</span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+                <strong>Recoveries</strong>
+                <ul className="trace-list">
+                  {recoveries.length === 0 ? (
+                    <li className="muted">None</li>
+                  ) : (
+                    recoveries.map((attempt) => (
+                      <li key={attempt.id}>
+                        <code>{attempt.strategy}</code>
+                        <span>{attempt.status}</span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div
+            className="agentguard-resize-handle agentguard-resize-nw"
+            onPointerDown={(event) => beginWindowDrag(event, "resize", "nw")}
+            aria-hidden="true"
+          />
+          <div
+            className="agentguard-resize-handle agentguard-resize-ne"
+            onPointerDown={(event) => beginWindowDrag(event, "resize", "ne")}
+            aria-hidden="true"
+          />
+          <div
+            className="agentguard-resize-handle agentguard-resize-sw"
+            onPointerDown={(event) => beginWindowDrag(event, "resize", "sw")}
+            aria-hidden="true"
+          />
+          <div
+            className="agentguard-resize-handle agentguard-resize-se"
+            onPointerDown={(event) => beginWindowDrag(event, "resize", "se")}
+            aria-hidden="true"
+          />
+        </section>
+      ) : null}
+
       {showCreate && (
         <div className="modal-backdrop" onMouseDown={() => setShowCreate(false)}>
           <form
@@ -927,6 +1207,12 @@ export default function App() {
           </form>
         </div>
       )}
+
+      <AgentGuardSettingsModal
+        open={showAgentGuardSettings}
+        onClose={() => setShowAgentGuardSettings(false)}
+        onSaved={handleAgentGuardSettingsSaved}
+      />
     </div>
   );
 }

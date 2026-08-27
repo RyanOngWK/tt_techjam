@@ -21,8 +21,9 @@ export type FailureType =
   | "tool_timeout"
   | "transient_tool_error"
   | "budget_exceeded"
+  | "budget_projected_exceeded"
   | "unknown";
-export type RecoveryStrategy = "retry" | "restart_resume" | "abort";
+export type RecoveryStrategy = "retry" | "restart_resume" | "compress_resume" | "abort";
 export type EventType =
   | "RUN_STARTED"
   | "RUN_COMPLETED"
@@ -40,11 +41,18 @@ export type EventType =
   | "APPROVAL_REQUESTED"
   | "APPROVAL_GRANTED"
   | "APPROVAL_DENIED"
+  | "BUDGET_SOFT_LIMIT"
+  | "BUDGET_PROJECTED_EXCEED"
+  | "BUDGET_COMPRESSED"
   | "BUDGET_EXCEEDED"
   | "BUDGET_RAISED";
 export type EventStatus = "ok" | "error" | "running";
 export type Severity = "low" | "medium" | "high";
-export type InjectFailType = "runtime_crash" | "tool_timeout" | "budget_exceeded";
+export type InjectFailType =
+  | "runtime_crash"
+  | "tool_timeout"
+  | "budget_exceeded"
+  | "budget_projected_exceeded";
 export type ApprovalDecision = "approve" | "abort";
 
 export interface Agent {
@@ -136,6 +144,36 @@ export interface Checkpoint {
   createdAt: string;
 }
 
+export interface AgentGuardSettingsOverrides {
+  tokenBudget?: number;
+  softRatio?: number;
+  strictRatio?: number;
+  estModelTokens?: number;
+  estToolTokens?: number;
+  charsPerToken?: number;
+  nextTurnEstimate?: number;
+  maxCompressRecoveries?: number;
+  requireApprovalAfterCrashes?: number;
+}
+
+export interface AgentGuardSettingsEffective {
+  tokenBudget: number;
+  softRatio: number;
+  strictRatio: number;
+  estModelTokens: number;
+  estToolTokens: number;
+  charsPerToken: number;
+  nextTurnEstimate: number;
+  maxCompressRecoveries: number;
+  requireApprovalAfterCrashes: number;
+}
+
+export interface AgentGuardSettingsResponse {
+  defaults: AgentGuardSettingsEffective;
+  overrides: AgentGuardSettingsOverrides | null;
+  effective: AgentGuardSettingsEffective;
+}
+
 export interface Database {
   version: 2;
   agents: Agent[];
@@ -145,6 +183,7 @@ export interface Database {
   incidents: Incident[];
   recoveryAttempts: RecoveryAttempt[];
   checkpoints: Checkpoint[];
+  agentGuardSettings: AgentGuardSettingsOverrides | null;
 }
 
 export interface CreateAgentInput {

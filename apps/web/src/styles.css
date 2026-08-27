@@ -948,6 +948,62 @@ textarea:focus {
   margin-top: 20px;
 }
 
+.agentguard-settings-modal {
+  width: min(640px, 100%);
+}
+
+.agentguard-settings-footer {
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.modal-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-advanced {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #faf9f6;
+}
+
+.settings-advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #575851;
+}
+
+.settings-advanced .form-grid {
+  margin-top: 12px;
+}
+
+.field-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-error {
+  margin: 12px 0 0;
+  color: #ac4343;
+  font-size: 12px;
+}
+
+.settings-loading {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.agentguard-settings-gear {
+  min-width: 36px;
+  padding-inline: 10px;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1097,35 +1153,120 @@ textarea:focus {
   }
 }
 
-.agentguard-panel {
+.agentguard-window {
+  position: fixed;
+  z-index: 15;
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
-  height: min(32vh, 280px);
-  max-height: min(32vh, 280px);
-  margin: 0 18px 12px;
-  padding: 12px 16px;
+  min-width: 420px;
+  min-height: 260px;
+  padding: 12px 16px 18px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: #f7f6f2;
+  box-shadow: var(--shadow);
   overflow: hidden;
+  box-sizing: border-box;
 }
 
-.agentguard-header {
+.agentguard-window-header {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
   margin-bottom: 8px;
   flex: 0 0 auto;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
 
-.agentguard-header h3 {
+.agentguard-window-header:active,
+body.agentguard-dragging .agentguard-window-header {
+  cursor: grabbing;
+}
+
+.agentguard-window-header h3 {
   margin: 4px 0 0;
   font-size: 16px;
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agentguard-window-header-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.agentguard-window-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.agentguard-window-close:hover {
+  color: var(--ink);
+}
+
+.agentguard-resize-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  touch-action: none;
+  z-index: 2;
+}
+
+.agentguard-resize-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+
+.agentguard-resize-ne {
+  right: 0;
+  top: 0;
+  cursor: nesw-resize;
+}
+
+.agentguard-resize-sw {
+  left: 0;
+  bottom: 0;
+  cursor: nesw-resize;
+}
+
+.agentguard-resize-se {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+
+body.agentguard-resizing-nw,
+body.agentguard-resizing-se {
+  cursor: nwse-resize;
+}
+
+body.agentguard-resizing-ne,
+body.agentguard-resizing-sw {
+  cursor: nesw-resize;
+}
+
+body.agentguard-dragging {
+  user-select: none;
+}
+
+body.agentguard-dragging:not(.agentguard-resizing-nw):not(.agentguard-resizing-ne):not(
+    .agentguard-resizing-sw
+  ):not(.agentguard-resizing-se) {
+  cursor: grabbing;
 }
 
 .agentguard-actions {
@@ -1173,6 +1314,25 @@ textarea:focus {
   background: #f7f6f2;
   padding-bottom: 4px;
   z-index: 1;
+}
+
+.playground-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.agentguard-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agentguard-toggle.is-active {
+  border-color: rgba(26, 26, 24, 0.28);
+  background: #efece4;
 }
 
 .trace-list {
@@ -1267,9 +1427,8 @@ textarea:focus {
 }
 
 @media (max-width: 900px) {
-  .agentguard-panel {
-    height: min(36vh, 260px);
-    max-height: min(36vh, 260px);
+  .agentguard-window {
+    min-width: min(100vw - 24px, 420px);
   }
 
   .agentguard-columns {
@@ -1277,3 +1436,4 @@ textarea:focus {
     height: auto;
   }
 }
+
