@@ -2,9 +2,17 @@
 
 ## 1. System Overview and Architectural Thesis
 
-AgentGuard is a deterministic, observable middleware layer around the Volc Agent Launchpad runtime. Telemetry is the feedback loop; failures become incidents; recovery uses policy-driven actions; checkpoints let an Agent resume safely; **BudgetPolicy** steers token cost before and during turns (soft auto) while exact overruns remain HITL.
+AgentGuard is a deterministic **span-based tracing** layer around the Volc Agent Launchpad runtime. A Run is represented as a tree of spans, each carrying a category, an actor, a parent, an attempt index, a duration with a recorded measurement source, and redacted attributes. Failure detection, deterministic recovery, checkpointing, and `BudgetPolicy` are **consumers** of that span stream: they read spans to decide, and they write their decisions back as spans nested under the span that triggered them.
 
-**Middleware story:** Team-designed reliability middleware (observability + deterministic recovery + proactive budget control), aligned with official Trace/Observability and failure-recovery directions—not a mandatory single track. Optional legacy label: Glass Box + recovery. Product requirements: [AgentGuard PRD](./AgentGuard%20PRD.md).
+**Track:** **Glass Box — trace and audit.** The trace is the product. Recovery and budget control exist to demonstrate that the trace is precise enough to drive automated control, which is the distinguishing claim versus a dashboard. Product requirements: [AgentGuard PRD](./AgentGuard%20PRD.md). Technical design of record: [Glass Box span model design](./superpowers/specs/2026-08-27-glass-box-span-model-design.md).
+
+**Design invariants.**
+
+1. Every span has non-null `category`, `actor`, and `attemptIndex`.
+2. The parent chain is acyclic and roots at the run span.
+3. The middleware never fabricates a span it did not observe or perform.
+4. `durationMs` is either measured, derived with `durationSource` recorded, or legitimately null for point-in-time events.
+5. Redaction happens before persistence, never only before display.
 
 ```mermaid
 flowchart LR
@@ -28,28 +36,35 @@ flowchart LR
 
 | Seam | File(s) | AgentGuard change |
 | --- | --- | --- |
-| Fastify routes | `apps/server/src/app.ts` | Add events, incidents, recoveries, fail-injection under `/api` |
-| AgentService | `apps/server/src/agent-service.ts` | Emit/persist events; open incidents; invoke recovery; checkpoints; **pre-turn BudgetPolicy wrap/gate; mid-turn projection cancel** |
-| AgentRunner | `apps/server/src/types.ts`, `codex-runner.ts`, `container-codex-runner.ts` | Surface step-level events from Codex JSONL; support cancel/restart for injection and mid-turn budget cancel |
-| Types / DB | `apps/server/src/types.ts`, `store.ts` | Extend `Database` with `events`, `incidents`, `recoveryAttempts`, `checkpoints`; budget fields on run |
+| Fastify routes | `apps/server/src/app.ts` | Events, incidents, recoveries, diagnoses, checkpoints, settings, fail-injection under `/api`; **run list; span query filters; `tree=true`** |
+| AgentService | `apps/server/src/agent-service.ts` | Own `TraceContext`; open/close `TURN` spans; parent child spans; pre-turn BudgetPolicy wrap/gate; **mid-turn projection cancel driven by span data**; **delete synthetic span** |
+| Span collector | `apps/server/src/agentguard/trace-collector.ts` | **`startSpan` / `endSpan` / `updateTraceEvent`** alongside point-in-time `appendTraceEvent`; assign category, actor, parent, attempt index |
+| AgentRunner | `apps/server/src/types.ts`, `codex-runner.ts`, `container-codex-runner.ts` | **Per-item-type attribute extraction and real status from exit codes**; `observedAt` stamping; **`kill()` for real crash injection** |
+| Types / DB | `apps/server/src/types.ts`, `store.ts` | `SpanCategory`, `ActorType`, `DurationSource`, `TURN` event type; span fields on `TraceEvent`; legacy-row normalization |
 | Config | `apps/server/src/config.ts`, `.env.example` | `AGENTGUARD_TOKEN_BUDGET` + soft-tier / projection estimate knobs |
 | Workspace | `apps/server/src/workspace.ts` | Snapshot / restore helpers for checkpoint refs |
-| Web UI | `apps/web/src/App.tsx`, `api.ts` | Timeline, incidents, recoveries, alert badge, budget meter/tier, usage display, inject-failure control |
+| Web UI | `apps/web/src/App.tsx`, `api.ts`, `types.ts` | **Run list tab, span tree with expand/collapse, expandable span detail, category/actor/status filter chips, qualified duration rendering, actor badges**; budget meter/tier, usage, inject-failure control |
 
 Reuse existing run creation: `POST /api/agents/:id/messages` → creates `AgentRun`. Do **not** introduce a parallel `POST /runs` root.
 
 ## 3. Core Implementation Components
 
-| Component | Module (proposed) | Responsibility |
+| Component | Module | Responsibility |
 | --- | --- | --- |
-| Event / Trace Collector | `apps/server/src/agentguard/trace-collector.ts` | Map runner/Codex lines → `TraceEvent`; redact secrets |
-| Trace Store | persistence via `JsonStore` | Persist events keyed by `run_id` |
+| **Span Collector** | `apps/server/src/agentguard/trace-collector.ts` | Span lifecycle (`startSpan` / `endSpan`), point-in-time events, category / actor / parent / attempt assignment, redaction before persist |
+| **Span Tree Builder** | `apps/server/src/agentguard/span-tree.ts` *(new)* | Build nested tree from flat spans; detect orphans and cycles; compute per-run summary counts |
+| **Item Extractor** | `apps/server/src/codex-runner.ts` | Per-Codex-item-type redacted attribute extraction; derive span status from exit codes; stamp `observedAt` |
+| Trace Store | persistence via `JsonStore` | Persist spans keyed by `run_id`; patch on `endSpan` |
 | Failure Detector | `apps/server/src/agentguard/failure-detector.ts` | Classify failures; open `Incident` |
+| Diagnostic Engine | `apps/server/src/agentguard/diagnostic.ts` | Deterministic root cause, evidence, confidence, signature, recurrence, suggestions |
 | Recovery Controller | `apps/server/src/agentguard/recovery-controller.ts` | Select policy; execute retry / restart_resume / abort / compress_resume; verify |
-| **Budget Policy** | `apps/server/src/agentguard/budget-policy.ts` | Tier selection, prompt wrap, pre-turn gate, mid-turn projection, compress text |
+| Budget Policy | `apps/server/src/agentguard/budget-policy.ts` | Tier selection, prompt wrap, pre-turn gate, mid-turn projection, compress text |
 | Checkpoint Service | `apps/server/src/agentguard/checkpoint.ts` | Snapshot workspace + `codexThreadId`; restore |
+| Settings | `apps/server/src/agentguard/settings.ts` | Env defaults merged with persisted runtime overrides |
 | Redactor | `apps/server/src/agentguard/redact.ts` | Strip keys/tokens from metadata and errors |
-| Dashboard | extend `apps/web` | Poll APIs; render timeline / incidents / recoveries / usage / budget |
+| Trace UI | extend `apps/web` | Poll APIs; render run list, span tree, span detail, filters, usage, budget |
+
+`span-tree.ts` is the only new module. Everything else is an extension of an existing one, keeping the change surface auditable.
 
 ## 4. Canonical Schemas
 
@@ -62,15 +77,24 @@ RecoveryStatus: started | succeeded | failed | verified
 FailureType: runtime_crash | tool_timeout | transient_tool_error | budget_exceeded
   | budget_projected_exceeded | unknown
 RecoveryStrategy: retry | restart_resume | compress_resume | abort
-EventType: RUN_STARTED | RUN_COMPLETED | RUN_FAILED | MODEL_CALL | TOOL_CALL
-  | CHECKPOINT_CREATED | ERROR | INCIDENT_OPENED | RECOVERY_STARTED
+EventType: RUN_STARTED | TURN | RUN_COMPLETED | RUN_FAILED | MODEL_CALL | TOOL_CALL
+  | CHECKPOINT_CREATED | CHECKPOINT_RESTORED | ERROR | INCIDENT_OPENED
+  | DIAGNOSIS_ISSUED | DIAGNOSIS_VERDICT | RECOVERY_STARTED
   | RECOVERY_COMPLETED | RECOVERY_FAILED | RECOVERY_VERIFIED | ALERT
+  | APPROVAL_REQUESTED | APPROVAL_GRANTED | APPROVAL_DENIED
   | BUDGET_SOFT_LIMIT | BUDGET_PROJECTED_EXCEED | BUDGET_COMPRESSED
   | BUDGET_EXCEEDED | BUDGET_RAISED
 EventStatus: ok | error | running
+SpanCategory: orchestration | model_call | tool_call | checkpoint
+  | policy_decision | human_approval | recovery
+ActorType: human | agent | middleware
+DurationSource: measured | inter_item_delta
+DiagnosisStatus: issued | verified | aborted
 Severity: low | medium | high
 BudgetTier: normal | soft_warn | strict
 ```
+
+`TURN` is new and replaces the previously synthesized `MODEL_CALL`. `CHECKPOINT_RESTORED`, `DIAGNOSIS_*`, and `APPROVAL_*` were already implemented but undocumented; they are now canonical.
 
 ### Entities
 
@@ -88,21 +112,47 @@ BudgetTier: normal | soft_warn | strict
 | startedAt / completedAt | string (ISO) | Existing timestamps |
 | prompt / output / error / usage | existing | Expose `usage` on dashboard when present |
 
-**TraceEvent**
+**TraceEvent (span)**
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | id | string | **Span id** |
 | runId | string | **Trace id** (same as run) |
-| parentEventId | string \| null | Parent span for tree/timeline |
+| parentEventId | string \| null | Parent span; null only for the run span |
 | type | EventType | |
-| status | EventStatus | |
-| timestamp | string (ISO) | |
+| category | SpanCategory | **Required, non-null** |
+| actor | ActorType | **Required, non-null** |
+| status | EventStatus | `running` while a span is open |
+| timestamp | string (ISO) | Span **start** |
+| endedAt | string \| null | Span end; null for point-in-time events |
 | durationMs | number \| null | |
-| metadata | object (redacted) | |
+| durationSource | DurationSource \| null | Null only when `durationMs` is null |
+| attemptIndex | number | Recovery attempt this span belongs to; default 0 |
+| metadata | object (redacted) | Structured attributes (see §4a) |
 | error | string \| null (redacted) | |
 
 MVP does not add separate `traceId`/`spanId` columns; document the mapping above in README/design summary.
+
+**Legacy normalization.** Rows written before this change lack the new fields. Extend the existing normalization path (the `tokensUsed` backfill pattern at `agent-service.ts:120`) to default `category: "orchestration"`, `actor: "middleware"`, `attemptIndex: 0`, `endedAt: null`, `durationSource: null` on read. The store is not wiped.
+
+### Span attributes by category
+
+Attributes are redacted before persistence. Truncation limits are fixed, not configurable.
+
+| Category | Attributes |
+| --- | --- |
+| `orchestration` (`TURN`) | `attemptIndex`, `tier`, `promptWrapped`, `codexThreadId`, `usage` |
+| `model_call` | `itemType`, `preview` (200 chars) |
+| `tool_call` (`command_execution`) | `command` (200 chars), `exitCode`, `outputPreview` (200 chars) |
+| `tool_call` (`file_change`) | `paths` (workspace-relative), `changeKinds`, `count` |
+| `tool_call` (`mcp_tool_call`) | `server`, `tool` |
+| `tool_call` (unrecognized) | `rawType`, `unrecognized: true` |
+| `checkpoint` | `checkpointId`, `boundary`, `codexThreadId` |
+| `policy_decision` | `incidentId`, `diagnosisId`, `failureType`, `confidence`, `signature`, budget figures |
+| `human_approval` | `incidentId`, `decision` |
+| `recovery` | `attemptId`, `incidentId`, `strategy` |
+
+Spans marked `unrecognized` are **excluded from `projectUsage` tool counts**, so unknown Codex item types cannot inflate the budget projection.
 
 **Incident**
 
@@ -143,13 +193,52 @@ MVP does not add separate `traceId`/`spanId` columns; document the mapping above
 ### JsonStore extension
 
 ```text
-Database v2:
+Database v3:
   agents, messages, runs          # existing
-  events: TraceEvent[]
+  events: TraceEvent[]            # spans
   incidents: Incident[]
   recoveryAttempts: RecoveryAttempt[]
   checkpoints: Checkpoint[]       # metadata only; files on disk
+  diagnoses: DiagnosisRecord[]
+  agentGuardSettings: AgentGuardSettings | null
 ```
+
+### Span collector API
+
+```ts
+startSpan(store, {
+  runId, type, category, actor, parentEventId, attemptIndex, metadata,
+}): Promise<string>          // writes status:"running"; returns span id
+
+endSpan(store, spanId, {
+  status, error, metadata, durationSource,
+}): Promise<void>            // patches endedAt, durationMs, status
+
+appendTraceEvent(store, {...}): Promise<TraceEvent>
+                             // point-in-time; durationMs stays null by design
+
+eventsForRun(store, runId): TraceEvent[]
+```
+
+`endSpan` uses an internal `updateTraceEvent` that locates the span inside `store.mutate`. `JsonStore.mutate` already yields a mutable database clone, so no store API change is required.
+
+The distinction between "null duration because instantaneous" and "null duration because never recorded" becomes explicit: only `appendTraceEvent` produces the former, and the latter is eliminated.
+
+### TraceContext
+
+Parent tracking is explicit rather than ambient. No async-local-storage.
+
+```ts
+interface TraceContext {
+  runId: string;
+  runSpanId: string;
+  turnSpanId: string | null;
+  failingSpanId: string | null;
+  attemptIndex: number;
+}
+```
+
+`AgentService.executeRun` owns one `TraceContext` per run and threads it into every emission site. When a span fails, `failingSpanId` is set, and incident, diagnosis, and recovery spans parent to it — which is what produces the nested closed loop in the tree.
 
 ## 5. State Machines
 
@@ -328,6 +417,14 @@ sequenceDiagram
 
 **Exact post-turn exceed** remains the only automatic path to `awaiting_approval` for budget (plus escalate after compress cap). Soft actions never require Approve.
 
+## 7b. Mid-turn tier defect and fix
+
+**Defect.** Mid-turn tier evaluation reads `liveRun.tokensUsed` (`agent-service.ts:514`), which is only incremented after a turn completes (`agent-service.ts:579`). Runs are created with `tokensUsed: 0` (`agent-service.ts:357`), and `shouldCancelMidTurn` returns false unless the tier is `strict` (`budget-policy.ts:57`). Therefore **mid-turn cancellation is unreachable on a first attempt** — it can only fire on a recovery re-attempt after a prior turn already consumed ≥85% of the budget. PRD US-7's "enough mid-turn spans" acceptance path cannot occur; only the injected path works.
+
+**Fix.** During a turn, evaluate the tier against `Math.max(tokensUsed, projected)` rather than committed usage alone. Committed usage remains authoritative for the post-turn hard gate and for HITL, so exact accounting is unchanged.
+
+**Why this belongs in a Glass Box design.** The corrected path makes a live control decision **from accumulated span data**. It is the clearest demonstration that the trace is a sensor rather than a display, and it is covered by a dedicated regression test (§14).
+
 ## 8. Checkpoint Mechanics
 
 **When:** After each successful `MODEL_CALL` or `TOOL_CALL` boundary (and emit `CHECKPOINT_CREATED`).
@@ -353,13 +450,43 @@ sequenceDiagram
 | Method and endpoint | Purpose |
 | --- | --- |
 | `POST /api/agents/:id/messages` | Existing — create run (unchanged) |
+| `GET /api/runs` | **New** — global run list, newest first, with per-run summary |
 | `GET /api/runs/:id` | Existing — run status (`recoveryAttemptCount`, `tokensUsed`, `tokenBudget`, `awaiting_approval`) |
-| `GET /api/runs/:id/events` | Trace events for a run (ordered); `?format=download` for evidence export |
+| `GET /api/runs/:id/events` | Spans for a run; **query filters and `tree=true`**; `?format=download` for evidence export |
 | `GET /api/incidents` | List incidents (`?runId=` optional filter) |
 | `GET /api/runs/:id/recoveries` | Recovery attempts for a run |
-| `GET /api/runs/:id/checkpoints` | Checkpoint metadata for a run (optional helper) |
+| `GET /api/runs/:id/diagnoses` | Diagnosis records for a run (newest first) |
+| `GET /api/runs/:id/checkpoints` | Checkpoint metadata for a run |
 | `POST /api/runs/:id/fail` | Inject controlled failure for demo/tests |
 | `POST /api/runs/:id/approve` | Operator approve / abort while `awaiting_approval` |
+| `GET / PATCH /api/agentguard/settings` | Runtime policy overrides (see §7a) |
+| `POST /api/agentguard/settings/reset` | Clear overrides back to env defaults |
+
+### Span query interface
+
+```text
+GET /api/runs/:id/events
+  ?category=tool_call,model_call     # comma-separated SpanCategory
+  &actor=agent                       # ActorType
+  &status=error                      # EventStatus
+  &since=2026-08-27T12:00:00Z        # ISO timestamp
+  &tree=true                         # nest by parentEventId
+  &format=download                   # evidence export
+```
+
+Filters compose with AND. `tree=true` returns roots with a `children` array; filtered-out parents are retained as structural placeholders so a matching child is never orphaned. The official brief lists a machine-readable query interface as an optional extension.
+
+### Run list response
+
+```text
+GET /api/runs -> [{
+  id, agentId, agentName, status, startedAt, completedAt,
+  durationMs, spanCount, errorCount, incidentCount,
+  tokensUsed, tokenBudget
+}]
+```
+
+Newest first, across all agents. Summary counts are computed from spans, not stored separately, so they cannot drift from the trace.
 
 ### Failure injection
 
@@ -371,7 +498,9 @@ POST /api/runs/:id/fail
 Behavior:
 
 - Run must be `running` or `recovering` (budget also accepted while awaiting approval for cancel race).
-- Sets an in-memory injection flag; cancels the active runner so `AgentService` classifies the failure.
+- **`runtime_crash` performs a real container kill** when the container runner is active. `ContainerCodexRunner.kill(agentId)` force-removes the container **without** setting `cancelled = true`, so the child exits non-zero and `classifyFailure` consumes a genuine "exited with code" signal rather than an injected flag. The resulting span carries a real exit code, which makes the diagnostic engine's exit-137 out-of-memory branch reachable with real data.
+- Falls back to the existing simulated path (in-memory flag + cancel) when the container runner is unavailable, so the local process runner and CI still work.
+- Other types set an in-memory injection flag; cancels the active runner so `AgentService` classifies the failure.
 - `runtime_crash` → restart_resume from latest checkpoint (second crash may require approval).
 - `tool_timeout` → retry from latest checkpoint (shared restore path with crash).
 - `budget_exceeded` → pause for approve (raise budget + continue) or abort + ALERT.
@@ -400,10 +529,16 @@ Replace with `[REDACTED]`. Unit-test the redactor with fixture strings.
 - **ADR-005 (Extend starter APIs):** Prefer `/api/runs/:id/...` over a parallel `/runs` API.
 - **ADR-006 (Alert = UI only):** MVP alerts are dashboard badges + `ALERT` events.
 - **ADR-007 (Trace/span mapping):** `runId` is the trace id; `eventId` is the span id; no duplicate ID fields in MVP.
-- **ADR-008 (Team-designed story):** Official examples are optional; AgentGuard combines observability + recovery rather than claiming a mandatory named track.
+- **ADR-008 (Glass Box track, superseding the earlier team-designed framing):** AgentGuard commits to the **Glass Box — trace and audit** track. The span tree is the deliverable; recovery, diagnosis, and budget control are retained as *consumers* of the trace and are presented as evidence that it is actionable, not as parallel middleware stories. The earlier "team-designed reliability middleware" framing is withdrawn because the extension guide asks for one named track and a diffuse story scores worse than a deep one.
 - **ADR-009 (Proactive Budget in Middleware):** Budget steering lives in `BudgetPolicy` + `AgentService`, not in the Agent prompt loop alone; soft actions are automatic; exact exceed is HITL.
 - **ADR-010 (Heuristic Mid-Turn Projection):** Mid-turn cancel uses span counts + stream bytes because Codex only reports exact usage on `turn.completed`; exact accounting remains authoritative for hard HITL.
 - **ADR-011 (Deterministic Compress Wrap):** Context compression is a middleware-built prompt prefix; no LLM summarizer and no fresh-thread reset in MVP.
+- **ADR-012 (Qualified Duration):** Codex emits `item.completed` without `item.started`, so JSONL-derived spans cannot have a measured start. Durations record their source: `measured` where the middleware owns both ends, `inter_item_delta` otherwise. A qualified number beats both a null and false precision. The UI marks derived durations with `~`.
+- **ADR-013 (Actor Attribution):** Every span records whether a `human`, the `agent`, or the `middleware` acted. This satisfies the official brief's "actor type" identifier and makes the trace auditable, not merely readable.
+- **ADR-014 (No Synthetic Spans):** The middleware never fabricates telemetry. The previous `synthesized: true` `MODEL_CALL` fallback is deleted; per-turn coverage is guaranteed by the `TURN` span, which the middleware genuinely measures. Enforced by test.
+- **ADR-015 (Real Failure Injection):** `runtime_crash` kills the runtime container so classification consumes a genuine exit code, with a documented fallback to simulation when no container runner is present.
+- **ADR-016 (Explicit Trace Context):** Parent tracking uses an explicit `TraceContext` threaded through `executeRun` rather than async-local-storage. At this size, explicit parameters remain testable and make the parent unambiguous at every emission site.
+- **ADR-017 (Derived Summaries):** Run list counts are computed from spans on read rather than stored, so summaries cannot drift from the trace they describe.
 
 ## 12. Dashboard Technical Approach
 
@@ -423,14 +558,26 @@ Replace with `[REDACTED]`. Unit-test the redactor with fixture strings.
 
 ### Unit
 
+- **Span lifecycle:** `startSpan` writes `running`; `endSpan` sets `endedAt`, `durationMs`, `durationSource`, and final status.
+- **Span tree builder:** nesting, ordering, orphan retention, cycle rejection, summary counts.
+- **Category and actor assignment** for every emission site (table-driven).
+- **Item extraction:** `command_execution` non-zero exit → `status: "error"`; `file_change` path extraction; unrecognized types marked and excluded from projection counts.
 - Failure classification, policy selection, retry limits, state transitions, checkpoint create/restore, redaction.
-- **BudgetPolicy:** `tier`, `projectUsage`, `shouldCancelMidTurn`, `shouldBlockPreTurn`, `wrapPrompt` (fixtures for ratios, estimates, disabled budget).
+- **BudgetPolicy:** `tier`, `projectUsage`, `shouldCancelMidTurn`, `shouldBlockPreTurn`, `wrapPrompt`, plus tier-against-projected (fixtures for ratios, estimates, disabled budget).
 
 ### Integration
 
 - AgentService → collector → detector → recovery → store → runner (with mocked runner).
+- **Tree well-formedness:** a completed run yields spans that all have non-null `category` and `actor`; the parent chain is acyclic and roots at the run span; no span carries `metadata.synthesized`.
+- **Nested closed loop:** an injected crash produces an error span whose children include `INCIDENT_OPENED`, `DIAGNOSIS_ISSUED`, and `RECOVERY_STARTED`, with `RECOVERY_VERIFIED` under the following `TURN`.
+- **Organic failure:** a mocked `command_execution` with exit code 1 produces an error span without any injection.
+- **Mid-turn cancel on a first attempt:** low budget plus enough spans triggers `BUDGET_PROJECTED_EXCEED` with no injection — the regression test for the tier fix in §7b.
 - Soft path: mid-turn cancel → `BUDGET_PROJECTED_EXCEED` → `BUDGET_COMPRESSED` → continue without approval.
 - Hard path: exact exceed → `awaiting_approval` → Approve → `BUDGET_RAISED`.
+
+### Redaction evidence
+
+A test serializes every span of a completed run and asserts that **no value** from `process.env` under a secret-shaped key (`*API_KEY*`, `*SECRET*`, `*TOKEN*`, `*_AK`, `*_SK`, `AUTHORIZATION`) appears anywhere in the output. This is stronger evidence than fixture-string matching and directly answers the official "no secrets in traces" acceptance item.
 
 ### E2E
 
@@ -445,11 +592,15 @@ Replace with `[REDACTED]`. Unit-test the redactor with fixture strings.
 
 ### Named fixtures (automated evidence)
 
-- `fixtures/agentguard/crash-then-recover.jsonl` — golden event sequence
-- `fixtures/agentguard/timeout-retry.jsonl`
-- `fixtures/agentguard/secrets-redacted.json` — assert no raw key material
-- `fixtures/agentguard/budget-soft-compress.jsonl` — soft/projected/compress sequence
-- `fixtures/agentguard/budget-hard-hitl.jsonl` — exceed → approval → raised
+Fixtures live under `apps/server/fixtures/agentguard/` as `.json` objects (`{ "events": string[] }`), **not** `.jsonl` at repo root. Earlier revisions of this document stated otherwise; the document is corrected rather than the files moved.
+
+- `apps/server/fixtures/agentguard/crash-then-recover.json` — golden span-type sequence
+- `apps/server/fixtures/agentguard/timeout-retry.json`
+- `apps/server/fixtures/agentguard/secrets-redacted.json` — assert no raw key material
+- `apps/server/fixtures/agentguard/budget-soft-compress.json` — soft/projected/compress sequence
+- `apps/server/fixtures/agentguard/budget-hard-hitl.json` — exceed → approval → raised
+
+Each fixture is extended with a `shape` block asserting expected `category`, `actor`, and parent relationships alongside the existing type sequence, so golden tests cover tree structure rather than only ordering.
 
 ## 15. One-Page Architecture Diagram (deliverable)
 
@@ -480,6 +631,11 @@ Export this diagram for the submission one-pager (README or `docs/agentguard-arc
 - Trace/span IDs are mapped from `runId`/`eventId` rather than OpenTelemetry exporters.
 - Mid-turn budget projection is heuristic; it can false-positive or false-negative vs true Ark usage.
 - Soft compress does not shrink the underlying Codex thread history; it only wraps the next user prompt.
+- **Model and tool span durations are inter-item deltas, not measured spans**, because Codex reports only item completion. Durations marked `measured` (turn, recovery, checkpoint) are the load-bearing numbers.
+- **Byte-based budget projection is weak.** `streamBytes` is derived from redacted metadata previews capped at 200 characters, so the byte term contributes little; projection is effectively driven by span counts.
+- The span tree has no search, virtualization, or retention policy; it is sized for hackathon-scale runs.
+- The audit trail is not tamper-evident. Hash chaining and signed exports were deliberately cut.
+- Real container-kill injection requires an active container runner; the local process runner falls back to simulated injection.
 
 ## 17. Setup and Reproducibility
 

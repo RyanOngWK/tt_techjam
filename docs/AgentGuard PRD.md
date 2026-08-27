@@ -3,27 +3,38 @@
 ## 1. Executive Summary
 
 **Product Name:** AgentGuard  
-**Concept:** AgentGuard is middleware that observes AI Agent execution, detects runtime failures, automatically applies predefined recovery strategies, and verifies whether the Agent successfully recovered. It combines observability, self-healing, and **proactive token-budget control** into a single feedback loop.  
-**Hackathon Context:** TikTok TechJam 2026. Build missing middleware on the Volc Agent Launchpad starter without rebuilding the baseline platform. Official directions are examples, not a mandatory checklist—teams may invent or combine capabilities.  
-**Middleware story:** **AgentGuard** is team-designed **reliability middleware**: structured observability (aligned with the official Trace / Audit / Observability example) plus deterministic failure recovery and cost/budget governance (aligned with lifecycle / reliability directions). Identity/authorization and threat-sandbox tracks are out of scope. If a README label is needed for the older extension guide, use **Glass Box + recovery**.
+**Track:** **Glass Box — trace and audit.**  
+**Concept:** AgentGuard makes an Agent Run diagnosable by representing it as a **span tree** rather than a log stream. Every step carries a category, an actor, a duration, a status, and a parent, and secrets are redacted before storage or display. Failure detection, deterministic recovery, and token-budget control are built **on top of** that trace and exist to prove the trace is good enough to act on.  
+**Hackathon Context:** TikTok TechJam 2026. Build missing middleware on the Volc Agent Launchpad starter without rebuilding the baseline platform.
+
+**Positioning:** The trace is the product. Recovery, diagnosis, and budget steering are **consumers** of the trace, not parallel features. The distinguishing claim is a closed loop: a failing span contains its own diagnosis, recovery, checkpoint restore, and verification as nested children, so a reviewer can see detection and repair in one tree instead of correlating separate panels. The official brief states that a polished UI does not count as middleware; this design answers that by making every visible element a projection of backend span data that also drives control decisions.
+
+Identity/authorization and threat-sandbox directions are out of scope.
 
 ## 2. Goals and Success Metrics
 
 | Goal | Success metric (MVP) |
 | --- | --- |
-| Make a Run diagnosable | Correlated event timeline for every run; show model `usage` when available; secrets redacted from all listed surfaces |
-| Detect failures deterministically | Classify at least **runtime crash** and **tool timeout** without an LLM |
-| Recover without full restart | Checkpoint + resume restores workspace and Codex thread; run completes after injected crash |
-| Prove recovery worked | Emit `RECOVERY_VERIFIED` after a successful post-recovery turn step |
-| Prevent runaway token cost | Soft tiers auto-steer (hint / mid-turn cancel / compress); hard exceed still HITL Approve/Abort |
-| Demo reliability | 3-minute live demo: success path + injected crash → detect → recover → verify; briefly show budget soft/compress or hard HITL |
+| Represent a Run as a span tree | Every span has non-null `category`, `actor`, `attemptIndex`, and a parent chain that is acyclic and roots at the run span |
+| Record what the brief asks for | Every span carries start time, duration (with measurement source), status, and error detail; token usage attributed per turn |
+| Never fabricate telemetry | No span carries `metadata.synthesized`; coverage guarantees come from spans the middleware genuinely owns |
+| Locate the failing step | First error span is reachable in one click; works on organic in-turn failures, not only injected ones |
+| Redact secrets | No value from a secret-shaped env key appears in any serialized trace, asserted by test |
+| Make the trace queryable | Filter spans by category, actor, and status; export evidence as JSON; list all runs with summary counts |
+| Prove the trace is actionable | Detection, diagnosis, recovery, and verification appear as **nested children of the failing span** |
+| Drive live control from spans | Mid-turn budget cancellation fires from accumulated span data on a first attempt, without injection |
+| Demo reliability | 3-minute live demo: success path → real container kill → error span → nested diagnosis/recovery/verification → export |
 
 ## 3. Problem Statement
 
-- AI Agents perform multi-step tasks involving LLM calls, tool calls, filesystem operations, code execution, and external APIs.
-- A single failure can terminate the entire run, requiring human investigation and manual restarts.
-- Observability is typically treated as a dashboard rather than a sensor for automated recovery.
-- Token usage is only known accurately after a Codex turn completes, so a post-turn budget gate alone cannot steer the Agent before cost overruns; runs can burn most of a budget in one long turn.
+- AI Agents perform multi-step tasks spanning model calls, tool calls, filesystem operations, code execution, and external APIs. The platform records these as **unrelated log lines**, so a Run cannot be reconstructed as a causal structure.
+- Without duration, parentage, category, or actor on each step, an operator cannot answer basic forensic questions: which step was slow, what caused the retry, who authorized the continuation, whether a human or the middleware acted.
+- **Locating the failing step is manual.** Nothing distinguishes a tool call that returned exit code 1 from one that succeeded, so failures are only visible once they terminate the run.
+- Observability is typically treated as a dashboard rather than a **sensor** — telemetry is rendered for humans but never consumed by automated control.
+- Payloads and errors carry credential material, so naive tracing creates a secret-leak surface across storage, display, export, and screenshots.
+- Token usage is only known accurately after a Codex turn completes, so a post-turn budget gate cannot steer the Agent before cost overruns; runs can burn most of a budget in one long turn.
+
+The through-line: **a Run is a tree, but the platform stores it as a list.** Every downstream problem — unlocatable failures, unattributable decisions, unsteerable cost — follows from that missing structure.
 
 ## 4. Personas
 
@@ -35,31 +46,59 @@
 
 ## 5. Core Architecture and Components
 
-Four major middleware components operate **outside** the Agent itself:
+Five major middleware components operate **outside** the Agent itself:
 
-- **Observability / Trace Layer:** Records structured events (see event catalog below).
-- **Failure Detector:** Consumes events and identifies failures deterministically (e.g. runtime crashes, tool timeouts) without LLM classification.
-- **Recovery Engine:** Receives an incident and executes a predefined recovery policy, then verifies recovery.
-- **Budget Policy:** Pre-turn prevention, heuristic mid-turn projection cancel, and deterministic context compression on soft recovery (see §6a). Hard exact exceed remains HITL.
+- **Span Collector:** Owns the span lifecycle (`startSpan` / `endSpan` / point-in-time events), assigns category, actor, parent, and attempt index, and redacts before persistence.
+- **Runner Instrumentation:** Extracts structured, redacted attributes from Codex JSONL items (command, exit code, changed paths, tool name) and derives real per-span status.
+- **Failure Detector:** Consumes spans and identifies failures deterministically (runtime crashes, tool timeouts) without LLM classification.
+- **Recovery Engine:** Receives an incident and executes a predefined recovery policy, then verifies recovery. Its spans nest under the failing span.
+- **Budget Policy:** Pre-turn prevention, mid-turn projection cancel driven by accumulated span data, and deterministic context compression (see §6a). Hard exact exceed remains HITL.
+
+### Span dimensions (canonical)
+
+Every span carries a **category** and an **actor**, which is what makes the trace
+queryable rather than merely readable.
+
+| `category` | Covers |
+| --- | --- |
+| `orchestration` | `RUN_STARTED`, `TURN`, `RUN_COMPLETED`, `RUN_FAILED` |
+| `model_call` | LLM / model invocation |
+| `tool_call` | Tool, filesystem, or code execution |
+| `checkpoint` | Checkpoint create and restore |
+| `policy_decision` | Incident opened, diagnosis issued, budget decision |
+| `human_approval` | Approval requested, granted, denied |
+| `recovery` | Recovery attempt lifecycle and verification |
+
+| `actor` | Meaning |
+| --- | --- |
+| `human` | Operator initiated or decided |
+| `agent` | The Agent performed the step |
+| `middleware` | AgentGuard acted |
 
 ### Event catalog (canonical)
 
-| Type | Meaning |
-| --- | --- |
-| `RUN_STARTED` / `RUN_COMPLETED` / `RUN_FAILED` | Run lifecycle |
-| `MODEL_CALL` | LLM / model invocation span |
-| `TOOL_CALL` | Tool or filesystem / code-execution span |
-| `CHECKPOINT_CREATED` | Checkpoint taken at a boundary |
-| `ERROR` | Error attached to a span or run |
-| `INCIDENT_OPENED` | Failure detector opened an incident |
-| `RECOVERY_STARTED` / `RECOVERY_COMPLETED` / `RECOVERY_FAILED` | Recovery attempt lifecycle |
-| `RECOVERY_VERIFIED` | Post-recovery success signal (see §8) |
-| `ALERT` | Dashboard-visible alert badge (no external channel in MVP) |
-| `BUDGET_SOFT_LIMIT` | Soft tier crossed (50% or 85%); auto steering applied |
-| `BUDGET_PROJECTED_EXCEED` | Mid-turn heuristic projection exceeded remaining budget; cancel issued |
-| `BUDGET_COMPRESSED` | Deterministic prompt wrap applied before resume |
-| `BUDGET_EXCEEDED` | Exact post-turn `tokensUsed > tokenBudget` |
-| `BUDGET_RAISED` | Operator approved; budget extended |
+| Type | Category | Actor | Meaning |
+| --- | --- | --- | --- |
+| `RUN_STARTED` | orchestration | human | Run lifecycle start |
+| `TURN` | orchestration | middleware | **New.** One runner attempt; measured duration, per-turn usage, attempt index |
+| `RUN_COMPLETED` / `RUN_FAILED` | orchestration | middleware | Run lifecycle end |
+| `MODEL_CALL` | model_call | agent | LLM / model invocation span |
+| `TOOL_CALL` | tool_call | agent | Tool or filesystem / code-execution span |
+| `CHECKPOINT_CREATED` / `CHECKPOINT_RESTORED` | checkpoint | middleware | Checkpoint taken or restored at a boundary |
+| `ERROR` | tool_call | agent | Error attached to a span or run |
+| `INCIDENT_OPENED` | policy_decision | middleware | Failure detector opened an incident |
+| `DIAGNOSIS_ISSUED` | policy_decision | middleware | Deterministic diagnosis with evidence, confidence, signature |
+| `DIAGNOSIS_VERDICT` | policy_decision | middleware | Diagnosis resolved as verified or aborted |
+| `RECOVERY_STARTED` / `RECOVERY_COMPLETED` / `RECOVERY_FAILED` | recovery | middleware | Recovery attempt lifecycle |
+| `RECOVERY_VERIFIED` | recovery | middleware | Post-recovery success signal (see §8) |
+| `APPROVAL_REQUESTED` | human_approval | middleware | HITL gate opened |
+| `APPROVAL_GRANTED` / `APPROVAL_DENIED` | human_approval | human | Operator decision |
+| `ALERT` | policy_decision | middleware | Dashboard-visible alert badge (no external channel in MVP) |
+| `BUDGET_SOFT_LIMIT` | policy_decision | middleware | Soft tier crossed (50% or 85%); auto steering applied |
+| `BUDGET_PROJECTED_EXCEED` | policy_decision | middleware | Mid-turn projection exceeded budget; cancel issued |
+| `BUDGET_COMPRESSED` | policy_decision | middleware | Deterministic prompt wrap applied before resume |
+| `BUDGET_EXCEEDED` | policy_decision | middleware | Exact post-turn `tokensUsed > tokenBudget` |
+| `BUDGET_RAISED` | policy_decision | human | Operator approved; budget extended |
 
 ## 6. Recovery Strategies and Checkpointing
 
@@ -134,12 +173,24 @@ Emit `BUDGET_COMPRESSED`. No LLM summarizer and no fresh-thread reset in MVP.
 ## 7. Data Model
 
 - **Run:** `run_id`, `agent_id`, `session_id` (Codex thread), `status`, `started_at`, `completed_at`, `recovery_attempt_count`, `tokens_used`, `token_budget`, `usage` (token/model usage when available)
-- **TraceEvent:** `event_id` (acts as **span id**), `run_id` (acts as **trace id**), `parent_event_id`, `type`, `status`, `timestamp`, `duration_ms`, `metadata`, `error` (redacted)
+- **TraceEvent (span):** `event_id` (acts as **span id**), `run_id` (acts as **trace id**), `parent_event_id`, `type`, `category`, `actor`, `status`, `timestamp` (start), `ended_at`, `duration_ms`, `duration_source`, `attempt_index`, `metadata`, `error` (redacted)
 - **Incident:** `incident_id`, `run_id`, `event_id`, `failure_type`, `severity`, `status`, `created_at`, `resolved_at`
 - **RecoveryAttempt:** `attempt_id`, `incident_id`, `run_id`, `strategy`, `status`, `started_at`, `completed_at`, `error`
 - **Checkpoint:** `checkpoint_id`, `run_id`, `agent_id`, `codex_thread_id`, `workspace_snapshot_ref`, `created_at`, `boundary` (e.g. after successful tool/model step)
 
 **Correlation mapping (MVP):** `run_id` = trace id; `event_id` = span id; `parent_event_id` links child spans. No separate `traceId`/`spanId` fields required.
+
+**Duration semantics.** Codex emits `item.completed` but no `item.started`, so JSONL-derived spans have no observable start. `duration_source` records how a duration was obtained:
+
+| `duration_source` | Applies to | Meaning |
+| --- | --- | --- |
+| `measured` | `TURN`, recovery, checkpoint spans | Middleware controls both ends; wall-clock timing |
+| `inter_item_delta` | model / tool spans from JSONL | Interval since the previously observed item |
+| `null` | point-in-time events | Instantaneous by nature; `duration_ms` is legitimately null |
+
+The UI renders `inter_item_delta` durations with a `~` prefix. A qualified number is preferred over a null or a falsely precise one.
+
+**Attempt attribution.** `attempt_index` records which recovery attempt produced a span, satisfying the official brief's "retry or cancellation relationships" requirement: a reviewer can see exactly which work was redone after recovery.
 
 Canonical field types and enums live in the [TRD](./AgentGuard%20TRD.md).
 
@@ -156,6 +207,11 @@ If no successful span appears within the verification window (see NFRs), the att
 ## 9. MVP Scope (Must Have)
 
 - Agent execution and run IDs (reuse starter run creation).
+- **Span model** — every span carries category, actor, parent, attempt index, start time, end time, duration, and duration source. No synthetic spans.
+- **Runner instrumentation** — redacted structured attributes extracted per Codex item type (command, exit code, changed paths, tool name) with real per-span status derived from exit codes.
+- **Trace tree UI** — run list tab, nested tree, expandable spans, category/actor/status filters, one-click jump to the first error span.
+- **Queryable trace API** — filter by category, actor, status, and time; `tree=true` for nested output; JSON evidence export.
+- **Real failure injection** — `runtime_crash` kills the runtime container so classification consumes a genuine exit code.
 - Structured event tracing and failure detection for **runtime crash**, **tool timeout**, **budget exceeded**, and **budget projected exceed**.
 - Retry recovery and runtime restart + checkpoint resume (**both** restore latest workspace + `codexThreadId` checkpoint).
 - Token/cost budget per run (`AGENTGUARD_TOKEN_BUDGET`) with abort or HITL raise-budget on **exact** exceed.
@@ -179,6 +235,11 @@ If no successful span appears within the verification window (see NFRs), the att
 - Provider-accurate per-span / mid-turn token metering from Codex or Ark.
 - LLM-based history summarization or fresh-thread context reset for compression.
 - Operator approval at soft (50% / 85%) thresholds.
+- Hash-chained tamper-evident audit log and signed exports (strong for audit, but serve no Glass Box demo beat).
+- OpenTelemetry / OTLP exporters (production distributed tracing is out of scope; `runId`/`eventId` mapping is the MVP contract).
+- LLM-based trace summarization (conflicts with ADR-001 determinism).
+- Trace search, virtualization, or retention policies in the tree UI.
+- Cross-process trace recovery after control-plane restart.
 
 ## 10. Non-Functional Requirements
 
@@ -199,8 +260,32 @@ If no successful span appears within the verification window (see NFRs), the att
 ## 11. User Stories and Acceptance Criteria
 
 **US-1 Observability**  
-As a judge, I can open a run and see a correlated timeline of model/tool steps with status, duration, errors, and model usage when available.  
-**AC:** Given a completed run, `GET /api/runs/:id/events` returns ordered events; dashboard renders them; run header shows `usage` when the starter populated it; no raw secrets appear.
+As a judge, I can open a run and see a correlated **tree** of model/tool steps with status, duration, errors, and model usage.  
+**AC:** Given a completed run, `GET /api/runs/:id/events?tree=true` returns spans nested by `parentEventId`; every span has non-null `category`, `actor`, and `attemptIndex`; the parent chain is acyclic and roots at the run span; the dashboard renders the tree with durations; per-turn usage appears on `TURN` spans; no raw secrets appear.
+
+**US-1a Failing step in an organic failure**  
+As a judge, I can identify the failing step of a run that failed on its own, without any injected failure.  
+**AC:** Given a Codex `command_execution` item with a non-zero exit code, the corresponding span has `status: "error"` and carries the redacted command and exit code; the UI's jump control targets it.
+
+**US-1b Run list**  
+As an operator, I can see all runs across all agents and open any one for forensic analysis.  
+**AC:** `GET /api/runs` returns runs newest-first with span count, error count, duration, and tokens; selecting one loads its trace in the floating window.
+
+**US-1c Filtering**  
+As an operator, I can narrow a large trace to what matters.  
+**AC:** `GET /api/runs/:id/events` accepts `category`, `actor`, `status`, and `since`; the UI exposes errors-only, category, and actor filter chips.
+
+**US-1d No fabricated telemetry**  
+As a judge, I can trust that every span reflects something that actually happened.  
+**AC:** No span in any run carries `metadata.synthesized`; asserted by an automated test. Coverage is guaranteed by the `TURN` span, which the middleware genuinely measures.
+
+**US-1e Actor attribution**  
+As an auditor, I can tell whether a human, the Agent, or the middleware performed each step.  
+**AC:** Every span has an `actor` of `human`, `agent`, or `middleware`; approval spans attribute the decision to `human`; recovery spans attribute to `middleware`.
+
+**US-1f Closed loop visible in one tree**  
+As a judge, I can see detection, diagnosis, recovery, and verification without leaving the trace view.  
+**AC:** Given a failed step, `INCIDENT_OPENED`, `DIAGNOSIS_ISSUED`, and `RECOVERY_STARTED` are children of the failing span, and `RECOVERY_VERIFIED` appears under the subsequent successful turn.
 
 **US-2 Crash recovery**  
 As an operator, when the runtime crashes mid-run, the system resumes from the latest checkpoint without discarding prior work.  
@@ -247,14 +332,17 @@ As an operator, exact post-turn exceed still pauses for Approve (raise) or Abort
 
 ## 13. Dashboard UX (MVP)
 
-Extend the existing web app (not a separate product). Required views for the demo run:
+Extend the existing web app (not a separate product). The **floating, draggable, resizable window is retained deliberately** — the trace detail view lives inside it rather than becoming a separate page, preserving the "middleware, not a second product" property.
 
-1. **Run header** — status, agent, timestamps, recovery attempt count, alert badge if any, **budget meter** (`tokensUsed` / `tokenBudget`), soft-tier badge when applicable, **model usage when available**.
-2. **Trace timeline** — ordered events (type, status, duration, error snippet); treat `run_id` as trace and `event_id` as span; highlight budget soft/projected/compress/exceed events.
-3. **Incidents panel** — failure type, severity, status, linked event.
-4. **Recovery history** — strategy, status, timestamps per attempt.
-5. **Inject failure** control — demo-only action wired to `POST /api/runs/:id/fail`.
-6. **Budget settings** — global AgentGuard policy modal (playground **Budget settings** + gear in floating window); changes persist in JsonStore without redeploy.
+1. **Run list tab** — all runs across all agents, newest first: status, duration, span count, error count, tokens. Selecting a run loads its trace.
+2. **Run header** — status, agent, timestamps, recovery attempt count, alert badge if any, **budget meter** (`tokensUsed` / `tokenBudget`), soft-tier badge when applicable, **model usage**.
+3. **Trace tree** — spans nested by `parentEventId` with expand/collapse. Each row shows category, actor badge, type, status, and duration (`~` prefix when `duration_source` is `inter_item_delta`). Budget and policy spans are highlighted.
+4. **Expandable span detail** — clicking a span reveals its full redacted metadata (command, exit code, changed paths, tool name, usage).
+5. **Filter chips** — errors only, by category, by actor.
+6. **Jump to failing step** — targets the first error span, so it works on organic failures that never became incidents.
+7. **Incidents and recovery** — retained, but the primary presentation is nesting under the failing span in the tree.
+8. **Inject failure** control — demo action wired to `POST /api/runs/:id/fail`; `runtime_crash` performs a real container kill.
+9. **Budget settings** — global AgentGuard policy modal (playground **Budget settings** + gear in floating window); changes persist in JsonStore without redeploy.
 
 Polling (existing pattern) is sufficient; SSE is optional.
 
@@ -269,16 +357,19 @@ Polling (existing pattern) is sufficient; SSE is optional.
 
 ## 15. Live Demo Scenario (3 Minutes)
 
+The demo is structured around the **trace**, not around recovery. Recovery appears as evidence that the trace is actionable.
+
 1. **Create or select an Agent** from the frontend and show its lifecycle state (ready/busy).
 2. **Invoke via Playground** with a real task (e.g. create a project, install dependencies, run tests).
-3. **Show normal execution:** Display traces for model calls, file/tool actions, checkpoints, and usage when present.
-4. **Inject failure:** Trigger a controlled runtime crash during the test phase.
-5. **Detection:** Middleware flags an incident identifying a runtime crash and selects restart + resume.
-6. **Recovery and verification:** System restores the checkpoint (workspace + thread), resumes, and the timeline shows `RECOVERY_STARTED` → `RECOVERY_COMPLETED` → `RECOVERY_VERIFIED`; run completes.
-7. **Budget control (brief):** Show budget meter; trigger soft path (low budget / inject projected path) so timeline shows `BUDGET_SOFT_LIMIT` and/or `BUDGET_COMPRESSED`, **or** inject exact `budget_exceeded` → Approve/Abort HITL.
-8. **Platform still controllable:** Show the Agent remains understandable afterward (e.g. stop/start, or send a follow-up message that continues the session / workspace).
+3. **Show the span tree:** `TURN` spans with measured durations, nested model and tool spans with commands and exit codes, checkpoints, per-turn token usage. Expand a tool span to show redacted attributes. Apply a category filter and an errors-only filter.
+4. **Inject a real failure:** Kill the runtime container mid-run. Codex exits non-zero and the tool span turns red on its own — no synthetic event.
+5. **Detection in the tree:** `INCIDENT_OPENED` and `DIAGNOSIS_ISSUED` appear as **children of the failing span**, with evidence, confidence, and the exit-code signature.
+6. **Recovery and verification:** `RECOVERY_STARTED` → `CHECKPOINT_RESTORED` nest under the same failing span; the next `TURN` contains `RECOVERY_VERIFIED`; the run completes. Point out `attemptIndex` distinguishing redone work.
+7. **Trace drives control (brief):** Show the budget meter and the mid-turn `BUDGET_PROJECTED_EXCEED` decision made from accumulated span data, **or** inject exact `budget_exceeded` → Approve/Abort HITL with the approval attributed to actor `human`.
+8. **Audit and export:** Open the run list to show every run across agents; export the trace as JSON and note that no secret material appears.
+9. **Platform still controllable:** Send a follow-up message that continues the session and workspace.
 
-Also show (briefly) a clean successful path or pre-injection success spans so judges see the normal case.
+Show the clean successful path first so judges see the normal case before the failure.
 
 ## 16. TechJam Deliverables Checklist
 
@@ -286,7 +377,15 @@ Aligned with official TechJam_Info.md §9–§10:
 
 - [ ] Starter **baseline acceptance** passes (hello-world CLI task, multi-turn resume, workspace survives restart) before the AgentGuard demo
 - [ ] **README** includes: setup, middleware problem and rationale, design summary, automated tests pointer, demo steps, limitations, no secrets
-- [ ] README names the middleware story: **AgentGuard** (observability + deterministic recovery); optional legacy label **Glass Box + recovery**
+- [ ] README names **one** selected track: **Glass Box — trace and audit**
+
+### Glass Box track acceptance (extension guide)
+
+- [ ] Correlated Run and step events shown in a **tree**
+- [ ] Spans include **status, duration, errors, and model usage**
+- [ ] Secrets **redacted**, asserted by an automated env-scan test
+- [ ] One **successful** task demonstrated end to end
+- [ ] The **failing step identified** in one failed task, including an organic (non-injected) failure
 - [ ] Three-minute live demo (normal case + failure/recovery + post-recovery controllability)
 - [ ] One-page architecture diagram (middleware, data flow, trust boundary, recovery/instrumentation point) — see TRD
 - [ ] Middleware in backend/runtime path (not UI-only)
@@ -309,8 +408,14 @@ Aligned with official TechJam_Info.md §9–§10:
 
 | Decision | Choice |
 | --- | --- |
-| Official framing | Team-designed reliability middleware (observability + recovery + budget); not a mandatory single “track” |
-| Legacy label | Optional “Glass Box + recovery” if needed for extension-guide wording |
+| Official framing | **Glass Box — trace and audit.** The trace is the product; recovery, diagnosis, and budget are consumers that prove it is actionable |
+| Span dimensions | Every span carries `category` and `actor`; both are required, non-null |
+| Duration for JSONL spans | Codex has no `item.started`, so use inter-item deltas and record `duration_source` rather than emitting null or false precision |
+| Synthetic spans | Removed. Per-turn coverage comes from the `TURN` span the middleware genuinely measures |
+| Trace UI location | Stays inside the existing floating window; run list becomes a tab. No separate product page |
+| Run list scope | Global across all agents, newest first |
+| Failure injection | `runtime_crash` performs a real container kill so classification consumes a genuine exit code |
+| Audit chain | Hash-chaining and signed exports cut — they serve no Glass Box demo beat |
 | API surface | Extend existing `/api/*` (no parallel `/runs` root) |
 | Checkpoint contents | Workspace snapshot + `codexThreadId` |
 | MVP failure set | Crash + timeout required; full policy table supported |
