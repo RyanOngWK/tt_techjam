@@ -7,6 +7,7 @@ import type {
   RecoveryStrategy,
   Severity,
 } from "../types.js";
+import { updateDiagnosis } from "./diagnostic.js";
 import { appendTraceEvent } from "./trace-collector.js";
 
 const now = () => new Date().toISOString();
@@ -140,6 +141,7 @@ export async function verifyRecovery(
       incidentId: attempt.incidentId,
     },
   });
+  await updateDiagnosis(store, attempt.incidentId, { status: "verified" });
 }
 
 export async function abortIncident(
@@ -169,6 +171,7 @@ export async function abortIncident(
     metadata: { incidentId, reason },
     error: reason,
   });
+  await updateDiagnosis(store, incidentId, { status: "aborted" });
 }
 
 export async function requestApproval(
@@ -196,4 +199,5 @@ export async function requestApproval(
     },
     error: reason,
   });
+  await updateDiagnosis(store, incident.id, { status: "awaiting_approval" });
 }

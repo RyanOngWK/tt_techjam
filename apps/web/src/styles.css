@@ -1360,6 +1360,124 @@ body.agentguard-dragging:not(.agentguard-resizing-nw):not(.agentguard-resizing-n
   color: var(--muted);
 }
 
+.diagnosis-card {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #e2d2b0;
+  border-radius: 12px;
+  background: #fbf6eb;
+}
+
+.diagnosis-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.diagnosis-card-head > strong {
+  font-size: 13px;
+}
+
+.diagnosis-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #efe6d5;
+  color: #8a5a12;
+}
+
+.diagnosis-status-verified {
+  background: #e3f2ea;
+  color: var(--green);
+}
+
+.diagnosis-status-aborted {
+  background: #f8e4e4;
+  color: var(--red);
+}
+
+.diagnosis-status-awaiting_approval {
+  background: #efe6d5;
+  color: #8a5a12;
+}
+
+.diagnosis-confidence {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.diagnosis-summary {
+  margin: 4px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.diagnosis-root-cause {
+  margin: 2px 0 6px;
+  font-size: 12px;
+  color: #4b4c48;
+}
+
+.diagnosis-evidence,
+.diagnosis-delta,
+.diagnosis-suggestions {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.diagnosis-evidence li,
+.diagnosis-delta li,
+.diagnosis-suggestions li {
+  padding: 3px 0;
+  font-size: 12px;
+  color: #4b4c48;
+}
+
+.diagnosis-evidence li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.diagnosis-evidence code,
+.diagnosis-delta code,
+.diagnosis-recurrence code {
+  font-size: 11px;
+}
+
+.diagnosis-strategy {
+  margin: 0 0 8px;
+  font-size: 12px;
+  display: grid;
+  gap: 2px;
+}
+
+.diagnosis-suggestions li {
+  list-style: disc;
+  list-style-position: inside;
+  color: var(--muted);
+}
+
+.diagnosis-recurrence {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.diagnosis-inline {
+  font-style: normal;
+  color: var(--muted);
+  font-weight: 400;
+}
+
 .alert-badge {
   display: inline-flex;
   align-items: center;

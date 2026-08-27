@@ -3,6 +3,7 @@ import type {
   AgentRun,
   AgentGuardSettingsOverrides,
   AgentGuardSettingsResponse,
+  DiagnosisRecord,
   Incident,
   Message,
   RecoveryAttempt,
@@ -96,6 +97,8 @@ export const api = {
     ),
   recoveries: (runId: string) =>
     request<{ recoveries: RecoveryAttempt[] }>("/api/runs/" + runId + "/recoveries"),
+  diagnoses: (runId: string) =>
+    request<{ diagnoses: DiagnosisRecord[] }>("/api/runs/" + runId + "/diagnoses"),
   injectFailure: (
     runId: string,
     type:

@@ -83,6 +83,50 @@ export interface RecoveryAttempt {
   error: string | null;
 }
 
+export type DiagnosisStatus =
+  | "issued"
+  | "acted"
+  | "awaiting_approval"
+  | "verified"
+  | "aborted";
+
+export interface DiagnosisEvidence {
+  signal: string;
+  value: string;
+  matched: string;
+}
+
+export interface DiagnosisStateDelta {
+  checkpointId: string;
+  workspaceFiles: number;
+  codexThreadReattached: boolean;
+  backoffMs: number | null;
+  tokensUsed: number;
+  tokenBudget: number;
+  degraded: boolean;
+}
+
+export interface DiagnosisRecord {
+  id: string;
+  runId: string;
+  incidentId: string;
+  failureType: string;
+  severity: string;
+  summary: string;
+  rootCause: string;
+  confidence: number;
+  evidence: DiagnosisEvidence[];
+  strategy: string | null;
+  strategyRationale: string | null;
+  stateDelta: DiagnosisStateDelta | null;
+  status: DiagnosisStatus;
+  signature: string;
+  recurrenceCount: number;
+  suggestions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SystemInfo {
   arkConfigured: boolean;
   arkBaseUrl: string;
