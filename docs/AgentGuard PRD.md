@@ -338,7 +338,7 @@ Extend the existing web app (not a separate product). The **floating, draggable,
 2. **Run header** — status, agent, timestamps, recovery attempt count, alert badge if any, **budget meter** (`tokensUsed` / `tokenBudget`), soft-tier badge when applicable, **model usage**.
 3. **Trace tree** — spans nested by `parentEventId` with expand/collapse. Each row shows category, actor badge, type, status, and duration (`~` prefix when `duration_source` is `inter_item_delta`). Budget and policy spans are highlighted.
 4. **Expandable span detail** — clicking a span reveals its full redacted metadata (command, exit code, changed paths, tool name, usage).
-5. **Filter chips** — errors only, by category, by actor.
+5. **Filter chips** — errors only, by category, by actor. **Filtering never flattens the tree:** non-matching ancestors of a match are retained as dimmed, non-interactive scaffolding so a matching span keeps its position in the run. Branches containing no match are removed entirely.
 6. **Jump to failing step** — targets the first error span, so it works on organic failures that never became incidents.
 7. **Incidents and recovery** — retained, but the primary presentation is nesting under the failing span in the tree.
 8. **Inject failure** control — demo action wired to `POST /api/runs/:id/fail`; `runtime_crash` performs a real container kill.

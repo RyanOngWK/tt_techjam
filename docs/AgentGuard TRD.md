@@ -474,7 +474,16 @@ GET /api/runs/:id/events
   &format=download                   # evidence export
 ```
 
-Filters compose with AND. `tree=true` returns roots with a `children` array; filtered-out parents are retained as structural placeholders so a matching child is never orphaned. The official brief lists a machine-readable query interface as an optional extension.
+Filters compose with AND. `tree=true` returns roots with a `children` array. The official brief lists a machine-readable query interface as an optional extension.
+
+**Filtering preserves hierarchy.** When a filter is active, a span that does not match is still returned if any descendant matches, so a matching span is never orphaned from its position in the run. Each span in tree mode carries a `matched` boolean:
+
+- `matched: true` — the span satisfies the filter; the UI renders it normally.
+- `matched: false` — the span is **structural scaffolding**, retained only so its matching descendants keep their place; the UI renders it dimmed and non-interactive.
+
+Spans with no matching descendants are omitted entirely.
+
+Rationale: the submission's central claim is that a Run is a tree rather than a list. "Errors only" is the most likely filter a reviewer will apply, and collapsing to a flat list at that moment would demonstrate the opposite. Recorded as ADR-018.
 
 ### Run list response
 
@@ -539,6 +548,7 @@ Replace with `[REDACTED]`. Unit-test the redactor with fixture strings.
 - **ADR-015 (Real Failure Injection):** `runtime_crash` kills the runtime container so classification consumes a genuine exit code, with a documented fallback to simulation when no container runner is present.
 - **ADR-016 (Explicit Trace Context):** Parent tracking uses an explicit `TraceContext` threaded through `executeRun` rather than async-local-storage. At this size, explicit parameters remain testable and make the parent unambiguous at every emission site.
 - **ADR-017 (Derived Summaries):** Run list counts are computed from spans on read rather than stored, so summaries cannot drift from the trace they describe.
+- **ADR-018 (Filtering Preserves Hierarchy):** Filtered trees retain non-matching ancestors as dimmed scaffolding (`matched: false`) rather than flattening to a list of matches. Filtering narrows *what is emphasized*, never *what structure exists*. Rejected alternatives: flatten to matches (loses position), and flatten with breadcrumbs (keeps orientation but still discards the tree at the moment a reviewer is most likely to be looking at it).
 
 ## 12. Dashboard Technical Approach
 

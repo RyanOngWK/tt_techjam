@@ -253,6 +253,15 @@ stream drives a live control decision.
 lists a machine-readable query interface as an optional extension; it is close to
 free once spans are structured.
 
+**Filtering preserves hierarchy.** A non-matching span is still returned when a
+descendant matches, so a match never loses its position in the run. Each span in
+tree mode carries `matched: boolean` — `true` renders normally, `false` renders
+as dimmed, non-interactive scaffolding. Branches with no match are omitted.
+
+Rejected alternatives: flatten to matches (loses position in the run), and
+flatten with breadcrumb paths (keeps orientation but still discards the tree at
+the exact moment a reviewer clicks "errors only"). Recorded as ADR-018.
+
 ## 9. UI
 
 The floating window is retained as the trace detail view — the "not a separate
