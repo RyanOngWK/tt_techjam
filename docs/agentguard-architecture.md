@@ -11,6 +11,10 @@ The trace is the product. Failure detection, diagnosis, recovery, and budget
 control are **consumers** of the span stream — they read spans to decide, and
 write their decisions back as spans nested under the span that triggered them.
 
+![AgentGuard architecture: UI, control plane, span collector, consumers, and runner](assets/agentguard-architecture.png)
+
+ASCII for terminal readers:
+
 ```text
 ┌─────────────┐     /api/*      ┌──────────────────┐
 │  Web UI     │ ───────────────►│  Fastify control  │

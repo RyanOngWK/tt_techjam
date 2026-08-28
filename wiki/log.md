@@ -1,5 +1,21 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Glass Box span model
+
+Repositioned AgentGuard onto the Glass Box track. `TraceEvent` became a span
+carrying `category`, `actor`, `parentEventId`, `attemptIndex`, `endedAt`,
+`durationMs`, and `durationSource`. Added `span-taxonomy.ts` and
+`span-tree.ts`. Replaced the synthetic `MODEL_CALL` fallback with a measured
+`TURN` span. Runner now derives span status from Codex exit codes. Fixed the
+mid-turn budget tier defect that made projected cancellation unreachable on a
+first attempt. Added `GET /api/runs` and span query filters. README and the
+architecture one-pager now name the track, copy TRD limitations (inter-item
+deltas, weak byte projection, real container kill for `runtime_crash`), and
+reference `docs/assets/agentguard-architecture.png`.
+
+Sources: [PRD](../docs/AgentGuard%20PRD.md), [TRD](../docs/AgentGuard%20TRD.md),
+[design](../docs/superpowers/specs/2026-08-27-glass-box-span-model-design.md).
+
 ## [2026-08-28] ingest | Span filter chips and expandable detail
 
 Trace timeline chips (Errors only, category, actor) build `activeFilter` and

@@ -1,18 +1,37 @@
 # AgentGuard
 
-Reliability middleware layered on `AgentService`: structured traces, failure
-classification, **deterministic diagnosis** (root cause, evidence, signature,
-recurrence, suggestions), recovery from workspace + `codexThreadId`
-checkpoints, per-run token budget with **proactive BudgetPolicy** (pre-turn
-prevention, heuristic mid-turn cancel, compress-on-recovery), and optional
-operator approval for hard exceed / second crash.
+**Track: Glass Box — trace and audit.** Reliability middleware layered on
+`AgentService`. A Run is a **span tree**, not a log stream: `runId` is the
+trace id and `eventId` is the span id. Failure classification, **deterministic
+diagnosis** (root cause, evidence, signature, recurrence, suggestions), recovery
+from workspace + `codexThreadId` checkpoints, per-run token budget with
+**proactive BudgetPolicy** (pre-turn prevention, heuristic mid-turn cancel,
+compress-on-recovery), and optional operator approval for hard exceed / second
+crash are **consumers** of that tree. They read spans and write decisions back
+as nested children of the span that triggered them.
+
+## Span model
+
+Every persisted `TraceEvent` is a span with **category** (`orchestration`,
+`model_call`, `tool_call`, `checkpoint`, `policy_decision`, `human_approval`,
+`recovery`), **actor** (`human`, `agent`, `middleware`), **parent**, **attempt
+index**, and a **duration** labelled `measured`, `inter_item_delta`, or null.
+The collector (`startSpan` / `endSpan`) assigns taxonomy and redacts before
+write; `span-tree.ts` rebuilds a single root of type `RUN_STARTED`. Codex item
+extraction supplies real exit codes. Quiet turns stay childless — no
+`metadata.synthesized` fallback.
+
+Diagram: [architecture one-pager](../docs/agentguard-architecture.md) and
+[PNG](../docs/assets/agentguard-architecture.png).
 
 ## Sources
 
-- [docs/agentguard-architecture.md](../docs/agentguard-architecture.md) — one-pager
+- [docs/agentguard-architecture.md](../docs/agentguard-architecture.md) — one-pager (ASCII + PNG)
 - [docs/AgentGuard PRD.md](../docs/AgentGuard%20PRD.md)
 - [docs/AgentGuard TRD.md](../docs/AgentGuard%20TRD.md)
 - [apps/server/src/agentguard/](../apps/server/src/agentguard/)
+- [apps/server/src/agentguard/span-taxonomy.ts](../apps/server/src/agentguard/span-taxonomy.ts)
+- [apps/server/src/agentguard/span-tree.ts](../apps/server/src/agentguard/span-tree.ts)
 - [apps/server/src/agent-service.ts](../apps/server/src/agent-service.ts)
 - [apps/server/fixtures/agentguard/](../apps/server/fixtures/agentguard/) — golden type sequences and tree-shape contracts
 

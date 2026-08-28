@@ -28,10 +28,13 @@ live-trace fetch, while `api.listRuns` and `api.spanTree` wrap the run-list and
 bearer-token protection to API routes, and serves the built client in
 production. [Web client](../apps/web/src/App.tsx) | [Web types](../apps/web/src/types.ts) | [Web span tree](../apps/web/src/span-tree.ts) | [API client](../apps/web/src/api.ts) | [API routes](../apps/server/src/app.ts)
 
-`AgentService` owns lifecycle coordination and AgentGuard middleware (trace,
-detect, recover, proactive budget, HITL). It accepts one active run per agent, writes
-metadata through `JsonStore`, delegates workspace lifecycle to
-`WorkspaceManager`, and delegates execution to an `AgentRunner` implementation.
+`AgentService` owns lifecycle coordination and AgentGuard middleware (span
+collector, tree builder, detect, recover, proactive budget, HITL). It accepts
+one active run per agent, writes metadata through `JsonStore`, delegates
+workspace lifecycle to `WorkspaceManager`, and delegates execution to an
+`AgentRunner` implementation. The one-page diagram is
+[docs/agentguard-architecture.md](../docs/agentguard-architecture.md)
+([PNG](../docs/assets/agentguard-architecture.png)).
 [Service](../apps/server/src/agent-service.ts) | [Runner factory](../apps/server/src/runner-factory.ts) | [AgentGuard wiki](agentguard.md) | [Architecture one-pager](../docs/agentguard-architecture.md)
 
 ## Run Flow

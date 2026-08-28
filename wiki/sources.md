@@ -6,7 +6,10 @@ claims until the relevant page is updated.
 
 - [Repository README](../README.md): product scope, setup, and high-level behavior.
 - [Architecture](../docs/ARCHITECTURE.md): component boundaries and trust model.
-- [AgentGuard architecture one-pager](../docs/agentguard-architecture.md): middleware sketch for demos.
+- [AgentGuard architecture one-pager](../docs/agentguard-architecture.md): middleware sketch for demos (ASCII + PNG).
+- [AgentGuard architecture PNG](../docs/assets/agentguard-architecture.png): rendered one-page diagram.
+- [Span taxonomy](../apps/server/src/agentguard/span-taxonomy.ts): category and actor assignment.
+- [Span tree](../apps/server/src/agentguard/span-tree.ts): single-root tree builder from stored spans.
 - [AgentGuard PRD](../docs/AgentGuard%20PRD.md) / [TRD](../docs/AgentGuard%20TRD.md): product and technical contracts.
 - [Security policy](../SECURITY.md): proof-of-concept security constraints.
 - [Contribution guide](../CONTRIBUTING.md): validation and documentation rules.
