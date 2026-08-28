@@ -41,7 +41,12 @@ import {
   validateEffectiveRatios,
   type PatchAgentGuardSettingsInput,
 } from "./agentguard/settings.js";
-import { appendTraceEvent, eventsForRun } from "./agentguard/trace-collector.js";
+import {
+  appendTraceEvent,
+  endSpan,
+  eventsForRun,
+  startSpan,
+} from "./agentguard/trace-collector.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -82,6 +87,14 @@ type ApprovalWaiter = {
   resolve: (decision: ApprovalDecision) => void;
   incidentId: string;
 };
+
+interface TraceContext {
+  runId: string;
+  runSpanId: string;
+  turnSpanId: string | null;
+  failingSpanId: string | null;
+  attemptIndex: number;
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -429,12 +442,19 @@ export class AgentService {
         storedRun.startedAt = now();
       }
     });
-    await appendTraceEvent(this.store, {
+    const runSpan = await appendTraceEvent(this.store, {
       runId: run.id,
       type: "RUN_STARTED",
-      status: "running",
+      status: "ok",
       metadata: { agentId: agentAtStart.id },
     });
+    const trace: TraceContext = {
+      runId: run.id,
+      runSpanId: runSpan.id,
+      turnSpanId: null,
+      failingSpanId: null,
+      attemptIndex: 0,
+    };
 
     let pendingVerifyAttemptId: string | null = null;
     let agent = this.getAgent(agentAtStart.id);
@@ -486,6 +506,19 @@ export class AgentService {
         let streamBytes = 0;
         let midTurnCancelIssued = false;
 
+        trace.attemptIndex = attempts - 1;
+        trace.turnSpanId = await startSpan(this.store, {
+          runId: trace.runId,
+          type: "TURN",
+          parentEventId: trace.runSpanId,
+          attemptIndex: trace.attemptIndex,
+          metadata: {
+            attemptIndex: trace.attemptIndex,
+            tier: prepared.lastEmittedTier,
+            promptWrapped: promptForRunner !== turnPrompt,
+            codexThreadId: agent.codexThreadId,
+          },
+        });
         const result = await this.runner.run({
           agentId: agent.id,
           workspacePath: agent.workspacePath,
@@ -496,6 +529,8 @@ export class AgentService {
               runId: run.id,
               type: event.type,
               status: event.status,
+              parentEventId: trace.turnSpanId,
+              attemptIndex: trace.attemptIndex,
               metadata: event.metadata ?? {},
               error: event.error ?? null,
             });
@@ -552,17 +587,12 @@ export class AgentService {
           },
         });
 
-        // Ensure at least one checkpoint and span for demos with sparse JSONL.
-        const existingSpans = eventsForRun(this.store, run.id).filter(
-          (event) => event.type === "MODEL_CALL" || event.type === "TOOL_CALL",
-        );
-        if (existingSpans.length === 0) {
-          await appendTraceEvent(this.store, {
-            runId: run.id,
-            type: "MODEL_CALL",
+        if (trace.turnSpanId) {
+          await endSpan(this.store, trace.turnSpanId, {
             status: "ok",
-            metadata: { synthesized: true },
+            metadata: { usage: result.usage },
           });
+          trace.turnSpanId = null;
           await this.checkpointAfterSpan(agent.id, run.id, "after_turn");
           agent = this.getAgent(agent.id);
         }
@@ -695,6 +725,11 @@ export class AgentService {
       } catch (error) {
         const cancelled = error instanceof RunCancelledError;
         const message = error instanceof Error ? error.message : String(error);
+        if (trace.turnSpanId) {
+          await endSpan(this.store, trace.turnSpanId, { status: "error", error: message });
+          trace.failingSpanId = trace.turnSpanId;
+          trace.turnSpanId = null;
+        }
         const injected = this.pendingInjections.get(run.id);
         const injectionCancel = this.injectionCancels.has(agent.id);
         const budgetProjectedCancel = this.budgetProjectedCancels.has(agent.id);

@@ -19,7 +19,7 @@ operator approval for hard exceed / second crash.
 
 | Capability | Notes |
 | --- | --- |
-| Trace | Redacted `TraceEvent`s; `GET /api/runs/:id/events?format=download` |
+| Trace | Redacted span tree: each runner attempt is a measured `TURN` parent for emitted model/tool spans; quiet turns remain childless rather than fabricating telemetry; `GET /api/runs/:id/events?format=download` |
 | Diagnose | Deterministic `DiagnosisRecord` per incident: root cause, evidence, confidence, failure signature + recurrence count, template suggestions; `GET /api/runs/:id/diagnoses` |
 | Detect | `runtime_crash`, `tool_timeout`, `budget_exceeded`, `budget_projected_exceeded`, … |
 | Recover | `retry`, `restart_resume`, `compress_resume` restore latest checkpoint; verdict updates the diagnosis (`acted` → `verified`/`aborted`/`awaiting_approval`) |

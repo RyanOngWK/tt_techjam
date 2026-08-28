@@ -1,5 +1,13 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Measured AgentGuard turn spans
+
+Each live runner attempt now opens a measured `TURN` span under `RUN_STARTED`,
+parents emitted runner events to that turn, records usage on successful close,
+and closes failed turns with their error. Quiet turns remain childless; the
+previous synthesized `MODEL_CALL` fallback was removed. Updated
+[agentguard.md](agentguard.md) and [index.md](index.md).
+
 ## [2026-08-27] update | Automated diagnosis
 
 Added deterministic diagnosis to AgentGuard: `diagnostic.ts` issues a

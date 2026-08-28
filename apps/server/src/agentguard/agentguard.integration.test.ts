@@ -467,6 +467,31 @@ describe("AgentGuard integration", () => {
     expect(service.getRun(first.run.id).tokenBudget).toBe(originalBudget);
     expect(service.getRun(second.run.id).tokenBudget).toBe(99_999);
   });
+
+  it("emits a real turn span and never fabricates telemetry", async () => {
+    const runner: AgentRunner = {
+      async run(): Promise<RunnerResult> {
+        return { output: "quiet", threadId: "thread-quiet", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Quiet" });
+    const { run } = await service.sendMessage(agent.id, "say nothing");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getEvents(run.id);
+    const turn = events.find((event) => event.type === "TURN");
+    expect(turn).toBeDefined();
+    expect(turn?.status).toBe("ok");
+    expect(turn?.durationMs).toBeGreaterThanOrEqual(0);
+    expect(turn?.durationSource).toBe("measured");
+    expect(turn?.attemptIndex).toBe(0);
+    expect(events.every((event) => event.metadata.synthesized === undefined)).toBe(true);
+    expect(events.every((event) => event.category !== undefined)).toBe(true);
+    expect(events.every((event) => event.actor !== undefined)).toBe(true);
+  });
 });
 
 describe("AgentGuard fixtures", () => {
