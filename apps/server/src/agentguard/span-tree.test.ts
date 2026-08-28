@@ -72,13 +72,44 @@ describe("span tree", () => {
     expect(buildSpanTree(orphan).map((node) => node.id)).toEqual(["lonely"]);
   });
 
-  it("breaks parent cycles instead of recursing forever", () => {
+  it("promotes a self-cycle span to a single root", () => {
+    const cyclic = [span({ id: "a", parentEventId: "a" })];
+    const roots = buildSpanTree(cyclic);
+    expect(roots.map((node) => node.id)).toEqual(["a"]);
+    expect(roots[0]?.children).toEqual([]);
+  });
+
+  it("promotes every node in a two-node cycle to roots", () => {
     const cyclic = [
       span({ id: "a", parentEventId: "b" }),
       span({ id: "b", parentEventId: "a" }),
     ];
     const roots = buildSpanTree(cyclic);
-    expect(roots.length).toBeGreaterThan(0);
+    expect(roots.map((node) => node.id)).toEqual(["a", "b"]);
+    expect(roots.every((node) => node.children.length === 0)).toBe(true);
+  });
+
+  it("promotes every node in a longer cycle to roots", () => {
+    const cyclic = [
+      span({ id: "a", parentEventId: "c" }),
+      span({ id: "b", parentEventId: "a" }),
+      span({ id: "c", parentEventId: "b" }),
+    ];
+    const roots = buildSpanTree(cyclic);
+    expect(roots.map((node) => node.id)).toEqual(["a", "b", "c"]);
+    expect(roots.every((node) => node.children.length === 0)).toBe(true);
+  });
+
+  it("promotes a non-cycle node whose ancestor chain enters a cycle", () => {
+    const cyclic = [
+      span({ id: "a", parentEventId: "b" }),
+      span({ id: "b", parentEventId: "a" }),
+      span({ id: "c", parentEventId: "a" }),
+      span({ id: "d", parentEventId: "c" }),
+    ];
+    const roots = buildSpanTree(cyclic);
+    expect(roots.map((node) => node.id)).toEqual(["a", "b", "c", "d"]);
+    expect(roots.every((node) => node.children.length === 0)).toBe(true);
   });
 
   it("composes filters with AND", () => {
@@ -102,5 +133,28 @@ describe("span tree", () => {
 
   it("returns a null duration for an empty run", () => {
     expect(summarizeRun([])).toEqual({ spanCount: 0, errorCount: 0, durationMs: null });
+  });
+
+  it("returns a null duration when every timestamp is invalid", () => {
+    const events = [
+      span({ id: "a", timestamp: "not-a-date" }),
+      span({ id: "b", timestamp: "also-invalid" }),
+    ];
+    const summary = summarizeRun(events);
+    expect(summary).toEqual({ spanCount: 2, errorCount: 0, durationMs: null });
+    expect(Number.isFinite(summary.durationMs ?? 0)).toBe(true);
+  });
+
+  it("ignores invalid timestamps when computing wall duration", () => {
+    const events = [
+      span({ id: "a", timestamp: "2026-08-27T10:00:00.000Z" }),
+      span({ id: "b", timestamp: "not-a-date" }),
+      span({ id: "c", timestamp: "2026-08-27T10:00:05.000Z" }),
+    ];
+    const summary = summarizeRun(events);
+    expect(summary.durationMs).toBe(5000);
+    expect(Number.isFinite(summary.durationMs ?? 0)).toBe(true);
+    expect(summary.durationMs).not.toBe(Number.NaN);
+    expect(summary.durationMs).not.toBe(Number.POSITIVE_INFINITY);
   });
 });

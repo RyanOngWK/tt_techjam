@@ -31,18 +31,41 @@ export function matchesFilter(event: TraceEvent, filter: SpanFilter): boolean {
   return true;
 }
 
-function hasCycle(
-  event: TraceEvent,
+function computeAttachWouldCycle(
   byId: Map<string, TraceEvent>,
-): boolean {
-  const seen = new Set<string>([event.id]);
-  let current = event.parentEventId;
-  while (current) {
-    if (seen.has(current)) return true;
-    seen.add(current);
-    current = byId.get(current)?.parentEventId ?? null;
+): Map<string, boolean> {
+  const memo = new Map<string, boolean>();
+
+  for (const id of byId.keys()) {
+    if (memo.has(id)) continue;
+
+    const path: string[] = [];
+    const seen = new Set<string>([id]);
+    let current = byId.get(id)?.parentEventId ?? null;
+    let result = false;
+
+    while (current) {
+      if (seen.has(current)) {
+        result = true;
+        break;
+      }
+      const cached = memo.get(current);
+      if (cached !== undefined) {
+        result = cached;
+        break;
+      }
+      seen.add(current);
+      path.push(current);
+      current = byId.get(current)?.parentEventId ?? null;
+    }
+
+    memo.set(id, result);
+    for (const node of path) {
+      if (!memo.has(node)) memo.set(node, result);
+    }
   }
-  return false;
+
+  return memo;
 }
 
 function prune(node: SpanNode): SpanNode | null {
@@ -67,12 +90,14 @@ export function buildSpanTree(
     });
   }
 
+  const attachWouldCycle = computeAttachWouldCycle(byId);
+
   const roots: SpanNode[] = [];
   for (const event of events) {
     const node = nodes.get(event.id);
     if (!node) continue;
     const parent = event.parentEventId ? nodes.get(event.parentEventId) : undefined;
-    if (!parent || hasCycle(event, byId)) {
+    if (!parent || attachWouldCycle.get(event.id)) {
       roots.push(node);
       continue;
     }
