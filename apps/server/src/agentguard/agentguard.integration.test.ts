@@ -9,6 +9,7 @@ import { RunCancelledError } from "../errors.js";
 import { JsonStore } from "../store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../types.js";
 import { WorkspaceManager } from "../workspace.js";
+import { buildSpanTree } from "./span-tree.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -526,7 +527,90 @@ describe("AgentGuard integration", () => {
     expect(events.some((event) => event.type === "BUDGET_PROJECTED_EXCEED")).toBe(true);
     const turn = events.find((event) => event.type === "TURN");
     expect(turn?.status).toBe("error");
-    expect(turn?.error).toBe("Turn cancelled because projected token usage exceeded the budget");
+    expect(turn?.error).toBe(
+      "Mid-turn budget cancellation was requested, but the runner completed regardless",
+    );
+  });
+
+  it("nests incident and recovery spans under the failing span", async () => {
+    let calls = 0;
+    let rejectFirst!: (error: Error) => void;
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) return firstHang;
+        return { output: "recovered", threadId: "thread-2", usage: null };
+      },
+      cancel: async () => {
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Nested" });
+    const { run } = await service.sendMessage(agent.id, "do work");
+    await expect
+      .poll(() =>
+        service.getEvents(run.id).some((event) => event.type === "CHECKPOINT_CREATED"),
+      )
+      .toBe(true);
+    await service.injectFailure(run.id, "runtime_crash");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getEvents(run.id);
+    const incident = events.find((event) => event.type === "INCIDENT_OPENED");
+    expect(incident?.parentEventId).not.toBeNull();
+
+    const failingId = incident!.parentEventId!;
+    const nested = events.filter((event) => event.parentEventId === failingId);
+    expect(nested.some((event) => event.type === "INCIDENT_OPENED")).toBe(true);
+    expect(nested.some((event) => event.type === "DIAGNOSIS_ISSUED")).toBe(true);
+    expect(nested.some((event) => event.type === "RECOVERY_STARTED")).toBe(true);
+    expect(nested.some((event) => event.type === "RECOVERY_COMPLETED")).toBe(true);
+
+    const error = events.find((event) => event.id === failingId);
+    const failedTurn = events.find((event) => event.id === error?.parentEventId);
+    expect(error?.type).toBe("ERROR");
+    expect(failedTurn?.type).toBe("TURN");
+    expect(failedTurn?.status).toBe("error");
+
+    const recoveredTurn = events.find(
+      (event) => event.type === "TURN" && event.attemptIndex === 1,
+    );
+    const verified = events.find((event) => event.type === "RECOVERY_VERIFIED");
+    expect(verified?.parentEventId).toBe(recoveredTurn?.id);
+
+    const roots = buildSpanTree(events);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.type).toBe("RUN_STARTED");
+  });
+
+  it("produces an acyclic tree rooted at the run span", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({ type: "MODEL_CALL", status: "ok" });
+        return { output: "ok", threadId: "t", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Tree" });
+    const { run } = await service.sendMessage(agent.id, "hello");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const roots = buildSpanTree(service.getEvents(run.id));
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.type).toBe("RUN_STARTED");
   });
 });
 

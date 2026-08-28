@@ -1,5 +1,14 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Closed-loop failure span parenting
+
+AgentGuard traces now form one tree rooted at `RUN_STARTED`. Failure `ERROR`
+events parent incident, diagnosis, approval, and recovery activity; each error
+remains under the failed turn or run, and successful recovery verification is
+parented to the recovered turn. Run-scoped and checkpoint events now carry the
+available run or turn parent plus retry attribution. Updated
+[agentguard.md](agentguard.md) and [index.md](index.md).
+
 ## [2026-08-28] ingest | Measured AgentGuard turn spans
 
 Each live runner attempt now opens a measured `TURN` span under `RUN_STARTED`,
