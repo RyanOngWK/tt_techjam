@@ -1,5 +1,14 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Span filter chips and expandable detail
+
+Trace timeline chips (Errors only, category, actor) build `activeFilter` and
+pass it to client `buildSpanTree`; inactive groups omit their keys so empty
+arrays are never sent. Clicking a span type expands a detail row. Scaffold
+ancestors stay dimmed with a clickable expand toggle. Updated
+[agentguard.md](agentguard.md), [architecture.md](architecture.md), and
+[sources.md](sources.md).
+
 ## [2026-08-28] ingest | Nested span tree in Trace tab
 
 The Trace tab timeline now renders a nested `SpanRow` tree (`buildSpanTree`

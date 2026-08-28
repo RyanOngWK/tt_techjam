@@ -60,6 +60,12 @@ export type SpanCategory =
 
 export type ActorType = "human" | "agent" | "middleware";
 
+export interface SpanFilter {
+  category?: SpanCategory[];
+  actor?: ActorType[];
+  status?: Array<"ok" | "error" | "running">;
+}
+
 export type DurationSource = "measured" | "inter_item_delta";
 
 export interface TraceEvent {

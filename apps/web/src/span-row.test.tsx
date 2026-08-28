@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { SpanRow } from "./App";
+import { buildActiveFilter, SpanRow } from "./App";
 import type { SpanNode } from "./types";
 
 function span(partial: Partial<SpanNode> & Pick<SpanNode, "id" | "type">): SpanNode {
@@ -32,6 +32,8 @@ describe("SpanRow", () => {
         expanded={new Set(["root"])}
         onToggle={() => undefined}
         failingEventId={null}
+        selected={null}
+        onSelect={() => undefined}
       />,
     );
 
@@ -66,6 +68,8 @@ describe("SpanRow", () => {
         expanded={new Set(["turn", "tool"])}
         onToggle={() => undefined}
         failingEventId={null}
+        selected={null}
+        onSelect={() => undefined}
       />,
     );
 
@@ -89,6 +93,8 @@ describe("SpanRow", () => {
         expanded={new Set()}
         onToggle={() => undefined}
         failingEventId={null}
+        selected={null}
+        onSelect={() => undefined}
       />,
     );
 
@@ -109,6 +115,8 @@ describe("SpanRow", () => {
         expanded={new Set(["err"])}
         onToggle={() => undefined}
         failingEventId="err"
+        selected={null}
+        onSelect={() => undefined}
       />,
     );
 
@@ -126,9 +134,85 @@ describe("SpanRow", () => {
         expanded={new Set(["scaffold"])}
         onToggle={() => undefined}
         failingEventId={null}
+        selected={null}
+        onSelect={() => undefined}
       />,
     );
 
     expect(html).toContain("is-scaffold");
+  });
+
+  it("renders expandable detail when the row is selected", () => {
+    const html = renderToStaticMarkup(
+      <SpanRow
+        node={span({
+          id: "tool",
+          type: "TOOL_CALL",
+          category: "tool_call",
+          attemptIndex: 1,
+          timestamp: "2026-08-28T04:00:00.000Z",
+          metadata: { command: "npm test", exitCode: 1 },
+        })}
+        depth={1}
+        expanded={new Set(["tool"])}
+        onToggle={() => undefined}
+        failingEventId={null}
+        selected="tool"
+        onSelect={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('class="span-detail"');
+    expect(html).toContain("padding-left:36px");
+    expect(html).toContain("<dt>category</dt>");
+    expect(html).toContain("<dd>tool_call</dd>");
+    expect(html).toContain("<dt>attempt</dt>");
+    expect(html).toContain("<dd>1</dd>");
+    expect(html).toContain("<dt>started</dt>");
+    expect(html).toContain("<dd>2026-08-28T04:00:00.000Z</dd>");
+    expect(html).toContain("<dt>command</dt>");
+    expect(html).toContain("<dd>npm test</dd>");
+    expect(html).toContain("<dt>exitCode</dt>");
+    expect(html).toContain("<dd>1</dd>");
+    expect(html).toContain('class="span-type"');
+    expect(html).toMatch(/<button[^>]*class="span-type"/);
+  });
+
+  it("hides span detail when a different row is selected", () => {
+    const html = renderToStaticMarkup(
+      <SpanRow
+        node={span({ id: "root", type: "TURN" })}
+        depth={0}
+        expanded={new Set(["root"])}
+        onToggle={() => undefined}
+        failingEventId={null}
+        selected="other"
+        onSelect={() => undefined}
+      />,
+    );
+
+    expect(html).not.toContain('class="span-detail"');
+  });
+});
+
+describe("buildActiveFilter", () => {
+  it("returns undefined when every chip group is inactive", () => {
+    expect(buildActiveFilter(false, null, null)).toBeUndefined();
+  });
+
+  it("omits inactive keys instead of passing empty arrays", () => {
+    expect(buildActiveFilter(true, null, null)).toEqual({ status: ["error"] });
+    expect(buildActiveFilter(false, "tool_call", null)).toEqual({
+      category: ["tool_call"],
+    });
+    expect(buildActiveFilter(false, null, "human")).toEqual({ actor: ["human"] });
+    expect(buildActiveFilter(true, "model_call", "agent")).toEqual({
+      status: ["error"],
+      category: ["model_call"],
+      actor: ["agent"],
+    });
+
+    const serialized = JSON.stringify(buildActiveFilter(true, null, "middleware"));
+    expect(serialized).not.toContain("[]");
   });
 });

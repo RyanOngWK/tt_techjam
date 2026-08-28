@@ -16,11 +16,13 @@ flowchart LR
 ## Control Plane
 
 The React client lists and configures agents, posts prompts, and polls a run
-until it finishes. The AgentGuard floating window has a **Trace** tab (nested span tree of the
-active run, with durations and actor badges, default expanded) and a **Runs**
-tab (global run list; selecting a row loads that run's trace). Web `TraceEvent`, `SpanNode`, and `RunListItem` types match
-the API contract. The client duplicates `buildSpanTree` (intentional, not a
-shared package) so filter chips can re-nest locally; `api.events` stays the
+until it finishes. The AgentGuard floating window has a **Trace** tab (nested
+span tree of the active run, with durations, actor badges, expandable span
+detail, and local filter chips that re-nest via `activeFilter`) and a **Runs**
+tab (global run list; selecting a row loads that run's trace). Web `TraceEvent`,
+`SpanNode`, `SpanFilter`, and `RunListItem` types match the API contract. The
+client duplicates `buildSpanTree` (intentional, not a shared package) so filter
+chips re-nest locally without sending empty arrays; `api.events` stays the
 live-trace fetch, while `api.listRuns` and `api.spanTree` wrap the run-list and
 `tree=true` endpoints. The Fastify API validates request bodies, applies optional
 bearer-token protection to API routes, and serves the built client in

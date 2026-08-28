@@ -18,6 +18,6 @@ claims until the relevant page is updated.
 - [Configuration](../apps/server/src/config.ts): environment contract and safeguards.
 - [Runner factory](../apps/server/src/runner-factory.ts): runtime-provider selection.
 - [Web application](../apps/web/src/App.tsx): browser client behavior.
-- [Web types](../apps/web/src/types.ts): client `TraceEvent`, `SpanNode`, and `RunListItem` shapes.
+- [Web types](../apps/web/src/types.ts): client `TraceEvent`, `SpanNode`, `SpanFilter`, and `RunListItem` shapes.
 - [Web API client](../apps/web/src/api.ts): `request` helper, `listRuns`, `events`, `spanTree`.
 - [Web span tree](../apps/web/src/span-tree.ts): intentional client duplicate of server tree-building plus `formatDuration`.

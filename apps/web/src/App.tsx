@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import {
   clampRect,
@@ -11,6 +11,7 @@ import {
 import { AgentGuardSettingsModal } from "./AgentGuardSettingsModal";
 import { buildSpanTree, formatDuration } from "./span-tree";
 import type {
+  ActorType,
   Agent,
   AgentRun,
   AgentGuardSettingsEffective,
@@ -19,6 +20,8 @@ import type {
   Message,
   RecoveryAttempt,
   RunListItem,
+  SpanCategory,
+  SpanFilter,
   SpanNode,
   SystemInfo,
   TraceEvent,
@@ -63,18 +66,35 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+export function buildActiveFilter(
+  errorsOnly: boolean,
+  categoryFilter: SpanCategory | null,
+  actorFilter: ActorType | null,
+): SpanFilter | undefined {
+  if (!errorsOnly && !categoryFilter && !actorFilter) return undefined;
+  return {
+    ...(errorsOnly ? { status: ["error" as const] } : {}),
+    ...(categoryFilter ? { category: [categoryFilter] } : {}),
+    ...(actorFilter ? { actor: [actorFilter] } : {}),
+  };
+}
+
 export function SpanRow({
   node,
   depth,
   expanded,
   onToggle,
   failingEventId,
+  selected,
+  onSelect,
 }: {
   node: SpanNode;
   depth: number;
   expanded: Set<string>;
   onToggle: (id: string) => void;
   failingEventId: string | null;
+  selected: string | null;
+  onSelect: (id: string) => void;
 }) {
   const isOpen = expanded.has(node.id);
   const hasChildren = node.children.length > 0;
@@ -103,7 +123,13 @@ export function SpanRow({
         >
           {hasChildren ? (isOpen ? "▾" : "▸") : "·"}
         </button>
-        <code className="span-type">{node.type}</code>
+        <button
+          type="button"
+          className="span-type"
+          onClick={() => onSelect(node.id)}
+        >
+          {node.type}
+        </button>
         <span className={"span-actor is-" + node.actor}>{node.actor}</span>
         <span className={"span-status is-" + node.status}>{node.status}</span>
         <span className="span-duration">
@@ -111,6 +137,24 @@ export function SpanRow({
         </span>
         {node.error ? <em className="span-error">{node.error}</em> : null}
       </li>
+      {selected === node.id ? (
+        <li className="span-detail" style={{ paddingLeft: depth * 14 + 22 }}>
+          <dl>
+            <dt>category</dt>
+            <dd>{node.category}</dd>
+            <dt>attempt</dt>
+            <dd>{node.attemptIndex}</dd>
+            <dt>started</dt>
+            <dd>{node.timestamp}</dd>
+            {Object.entries(node.metadata).map(([key, value]) => (
+              <Fragment key={key}>
+                <dt>{key}</dt>
+                <dd>{typeof value === "string" ? value : JSON.stringify(value)}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </li>
+      ) : null}
       {isOpen
         ? node.children.map((child) => (
             <SpanRow
@@ -120,6 +164,8 @@ export function SpanRow({
               expanded={expanded}
               onToggle={onToggle}
               failingEventId={failingEventId}
+              selected={selected}
+              onSelect={onSelect}
             />
           ))
         : null}
@@ -157,6 +203,10 @@ export default function App() {
   const [agentGuardTab, setAgentGuardTab] = useState<"trace" | "runs">("trace");
   const [runList, setRunList] = useState<RunListItem[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<SpanCategory | null>(null);
+  const [actorFilter, setActorFilter] = useState<ActorType | null>(null);
+  const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -583,9 +633,14 @@ export default function App() {
     return open?.eventId ?? null;
   }, [traceEvents, incidents]);
 
+  const activeFilter = useMemo(
+    () => buildActiveFilter(errorsOnly, categoryFilter, actorFilter),
+    [errorsOnly, categoryFilter, actorFilter],
+  );
+
   const spanRoots = useMemo(
-    () => buildSpanTree(traceEvents, undefined),
-    [traceEvents],
+    () => buildSpanTree(traceEvents, activeFilter),
+    [traceEvents, activeFilter],
   );
 
   const expanded = useMemo(() => {
@@ -1326,6 +1381,39 @@ export default function App() {
             <div className="agentguard-columns">
               <div className="agentguard-column">
                 <strong>Timeline</strong>
+                <div className="span-filters">
+                  <button
+                    type="button"
+                    className={errorsOnly ? "span-chip is-active" : "span-chip"}
+                    onClick={() => setErrorsOnly((value) => !value)}
+                  >
+                    Errors only
+                  </button>
+                  {(["model_call", "tool_call", "policy_decision", "recovery"] as const).map(
+                    (category) => (
+                      <button
+                        key={category}
+                        type="button"
+                        className={categoryFilter === category ? "span-chip is-active" : "span-chip"}
+                        onClick={() =>
+                          setCategoryFilter((value) => (value === category ? null : category))
+                        }
+                      >
+                        {category.replace("_", " ")}
+                      </button>
+                    ),
+                  )}
+                  {(["human", "agent", "middleware"] as const).map((actor) => (
+                    <button
+                      key={actor}
+                      type="button"
+                      className={actorFilter === actor ? "span-chip is-active" : "span-chip"}
+                      onClick={() => setActorFilter((value) => (value === actor ? null : actor))}
+                    >
+                      {actor}
+                    </button>
+                  ))}
+                </div>
                 <ul className="trace-list">
                   {spanRoots.length === 0 ? (
                     <li className="muted">No spans yet</li>
@@ -1338,6 +1426,8 @@ export default function App() {
                         expanded={expanded}
                         onToggle={toggleSpan}
                         failingEventId={failingEventId}
+                        selected={selectedSpanId}
+                        onSelect={setSelectedSpanId}
                       />
                     ))
                   )}

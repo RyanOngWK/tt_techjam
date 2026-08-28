@@ -2,13 +2,9 @@
 // chips can re-nest the tree in the browser with no round trip. Do not extract
 // a shared package.
 
-import type { ActorType, DurationSource, SpanCategory, SpanNode, TraceEvent } from "./types";
+import type { DurationSource, SpanFilter, SpanNode, TraceEvent } from "./types";
 
-export interface SpanFilter {
-  category?: SpanCategory[];
-  actor?: ActorType[];
-  status?: Array<"ok" | "error" | "running">;
-}
+export type { SpanFilter };
 
 export function matchesFilter(event: TraceEvent, filter: SpanFilter): boolean {
   if (filter.category?.length && !filter.category.includes(event.category)) return false;
