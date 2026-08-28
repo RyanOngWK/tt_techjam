@@ -5,6 +5,9 @@
 `createRunner` selects `ContainerCodexRunner` when `RUNTIME_PROVIDER=container`;
 otherwise it selects `CodexRunner`. Both are implementations of `AgentRunner`
 and receive the workspace, prompt, and prior Codex thread ID from the service.
+Optional `kill` is used by `runtime_crash` injection: the container runner
+force-removes the active container without setting `cancelled`; the local
+process runner delegates to `cancel`.
 
 - Local POC: host Node.js control plane with one disposable Docker, Colima, or
   Podman container per turn.

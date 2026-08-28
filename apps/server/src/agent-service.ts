@@ -329,8 +329,12 @@ export class AgentService {
       throw new HttpError(409, "Failure injection requires an active run");
     }
     this.pendingInjections.set(runId, type);
-    this.injectionCancels.add(run.agentId);
-    await this.runner.cancel(run.agentId);
+    if (type === "runtime_crash" && typeof this.runner.kill === "function") {
+      await this.runner.kill(run.agentId);
+    } else {
+      this.injectionCancels.add(run.agentId);
+      await this.runner.cancel(run.agentId);
+    }
     return { ok: true };
   }
 

@@ -240,6 +240,10 @@ export class CodexRunner implements AgentRunner {
     return true;
   }
 
+  async kill(agentId: string): Promise<boolean> {
+    return this.cancel(agentId);
+  }
+
   async run(request: RunnerRequest): Promise<RunnerResult> {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active Codex process");

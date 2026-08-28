@@ -1,5 +1,13 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Real container-kill crash injection
+
+`injectFailure(..., "runtime_crash")` calls optional `AgentRunner.kill` when
+present. `ContainerCodexRunner.kill` force-removes the container without
+setting `cancelled`, so the child exits non-zero. Runners without `kill` still
+use cancel plus the injection flag. Updated [agentguard.md](agentguard.md) and
+[runtime-and-deployment.md](runtime-and-deployment.md).
+
 ## [2026-08-28] ingest | Mid-turn budget tier from projected usage
 
 Mid-turn `budgetTier` now uses `Math.max(tokensUsed, projected)` so a first

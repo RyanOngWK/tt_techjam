@@ -1,7 +1,9 @@
+import type { ChildProcess } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 import {
   buildContainerRunArgs,
+  ContainerCodexRunner,
   containerName,
 } from "./container-codex-runner.js";
 
@@ -59,5 +61,49 @@ describe("Container Codex runner", () => {
     );
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
+  });
+});
+
+describe("container kill", () => {
+  it("removes the container without marking the run cancelled", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_DATA_DIR: "/tmp/agentguard-kill/data",
+      AGENT_WORKSPACE_ROOT: "/tmp/agentguard-kill/workspaces",
+      CODEX_HOME: "/tmp/agentguard-kill/codex",
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+      // A binary that does not exist, so removeContainer takes its catch path
+      // and falls back to child.kill() without needing a container engine.
+      CONTAINER_ENGINE: "agentguard-no-such-engine",
+    });
+    const runner = new ContainerCodexRunner(config);
+
+    const active = {
+      child: { kill: () => undefined } as unknown as ChildProcess,
+      containerName: "launchpad-test-agent-1",
+      cancelled: false,
+      timedOut: false,
+      outputExceeded: false,
+      settled: Promise.resolve(),
+      termination: null,
+    };
+    (runner as unknown as { active: Map<string, typeof active> }).active.set("agent-1", active);
+
+    const killed = await runner.kill("agent-1");
+    expect(killed).toBe(true);
+    expect(active.cancelled).toBe(false);
+  });
+
+  it("returns false for an unknown agent", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_DATA_DIR: "/tmp/agentguard-kill/data",
+      AGENT_WORKSPACE_ROOT: "/tmp/agentguard-kill/workspaces",
+      CODEX_HOME: "/tmp/agentguard-kill/codex",
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    expect(await new ContainerCodexRunner(config).kill("nope")).toBe(false);
   });
 });
