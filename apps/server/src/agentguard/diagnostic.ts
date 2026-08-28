@@ -309,12 +309,8 @@ export async function issueDiagnosis(
     runId: input.runId,
     type: "DIAGNOSIS_ISSUED",
     status: "error",
-    ...(input.parentEventId !== undefined
-      ? { parentEventId: input.parentEventId }
-      : {}),
-    ...(input.attemptIndex !== undefined
-      ? { attemptIndex: input.attemptIndex }
-      : {}),
+    parentEventId: input.parentEventId ?? null,
+    attemptIndex: input.attemptIndex ?? 0,
     metadata: {
       diagnosisId: record.id,
       incidentId: record.incidentId,
@@ -362,12 +358,8 @@ export async function updateDiagnosis(
       runId: updated.runId,
       type: "DIAGNOSIS_VERDICT",
       status: updated.status === "verified" ? "ok" : "error",
-      ...(trace?.parentEventId !== undefined
-        ? { parentEventId: trace.parentEventId }
-        : {}),
-      ...(trace?.attemptIndex !== undefined
-        ? { attemptIndex: trace.attemptIndex }
-        : {}),
+      parentEventId: trace?.parentEventId ?? null,
+      attemptIndex: trace?.attemptIndex ?? 0,
       metadata: {
         diagnosisId: updated.id,
         incidentId: updated.incidentId,

@@ -395,6 +395,9 @@ describe("AgentGuard integration", () => {
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
     expect(service.getEvents(run.id).some((e) => e.type === "BUDGET_RAISED")).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
+    const roots = buildSpanTree(service.getEvents(run.id));
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.type).toBe("RUN_STARTED");
   });
 
   it("auto-compresses on projected budget exceed without HITL", async () => {
@@ -587,11 +590,48 @@ describe("AgentGuard integration", () => {
       (event) => event.type === "TURN" && event.attemptIndex === 1,
     );
     const verified = events.find((event) => event.type === "RECOVERY_VERIFIED");
+    expect(recoveredTurn).toBeDefined();
     expect(verified?.parentEventId).toBe(recoveredTurn?.id);
 
     const roots = buildSpanTree(events);
     expect(roots).toHaveLength(1);
     expect(roots[0]?.type).toBe("RUN_STARTED");
+  });
+
+  it("parents a post-recovery budget error to the recovered turn", async () => {
+    let calls = 0;
+    const runner: AgentRunner = {
+      async run(): Promise<RunnerResult> {
+        calls += 1;
+        if (calls === 1) throw new Error("runtime crash");
+        return {
+          output: "recovered over budget",
+          threadId: "thread-recovered-budget",
+          usage: { inputTokens: 6, outputTokens: 5 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, {
+      AGENTGUARD_TOKEN_BUDGET: "10",
+      AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE: "0",
+    });
+    const agent = await service.createAgent({ name: "RecoveredBudget" });
+    const { run } = await service.sendMessage(agent.id, "recover then exceed budget");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+
+    const events = service.getEvents(run.id);
+    const errors = events.filter((event) => event.type === "ERROR");
+    const recoveredTurn = events.find(
+      (event) => event.type === "TURN" && event.attemptIndex === 1,
+    );
+    expect(errors).toHaveLength(2);
+    expect(recoveredTurn).toBeDefined();
+    expect(errors[1]?.parentEventId).toBe(recoveredTurn?.id);
+
+    await service.resolveApproval(run.id, "approve");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
   });
 
   it("produces an acyclic tree rooted at the run span", async () => {

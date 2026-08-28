@@ -340,7 +340,7 @@ export class AgentService {
       runId,
       type: decision === "approve" ? "APPROVAL_GRANTED" : "APPROVAL_DENIED",
       status: decision === "approve" ? "ok" : "error",
-      parentEventId: this.runSpanId(runId),
+      parentEventId: incidentTrace.parentEventId,
       attemptIndex: incidentTrace.attemptIndex,
       metadata: { incidentId: waiter.incidentId, decision },
     });
@@ -611,6 +611,8 @@ export class AgentService {
           });
           if (midTurnCancelIssued) {
             trace.failingSpanId = completedTurnSpanId;
+          } else {
+            trace.failingSpanId = null;
           }
           trace.turnSpanId = null;
         }
@@ -668,6 +670,7 @@ export class AgentService {
               tokenBudget: runAfterUsage.tokenBudget,
             },
           });
+          trace.failingSpanId = completedTurnSpanId;
           const recovered = await this.handleFailure({
             agent,
             run: runAfterUsage,
@@ -704,6 +707,7 @@ export class AgentService {
         if (injected) {
           this.pendingInjections.delete(run.id);
           this.injectionCancels.delete(agent.id);
+          trace.failingSpanId = completedTurnSpanId;
           const recovered = await this.handleFailure({
             agent,
             run: this.getRun(run.id),

@@ -40,12 +40,8 @@ export async function openIncident(
     runId: input.runId,
     type: "INCIDENT_OPENED",
     status: "error",
-    ...(input.parentEventId !== undefined
-      ? { parentEventId: input.parentEventId }
-      : {}),
-    ...(input.attemptIndex !== undefined
-      ? { attemptIndex: input.attemptIndex }
-      : {}),
+    parentEventId: input.parentEventId ?? null,
+    attemptIndex: input.attemptIndex ?? 0,
     metadata: {
       incidentId: incident.id,
       failureType: incident.failureType,
@@ -88,12 +84,8 @@ export async function startRecoveryAttempt(
     runId: input.incident.runId,
     type: "RECOVERY_STARTED",
     status: "running",
-    ...(input.parentEventId !== undefined
-      ? { parentEventId: input.parentEventId }
-      : {}),
-    ...(input.attemptIndex !== undefined
-      ? { attemptIndex: input.attemptIndex }
-      : {}),
+    parentEventId: input.parentEventId ?? null,
+    attemptIndex: input.attemptIndex ?? 0,
     metadata: {
       attemptId: attempt.id,
       strategy: attempt.strategy,
@@ -129,12 +121,8 @@ export async function completeRecoveryAttempt(
     runId: attempt.runId,
     type: outcome === "succeeded" ? "RECOVERY_COMPLETED" : "RECOVERY_FAILED",
     status: outcome === "succeeded" ? "ok" : "error",
-    ...(trace?.parentEventId !== undefined
-      ? { parentEventId: trace.parentEventId }
-      : {}),
-    ...(trace?.attemptIndex !== undefined
-      ? { attemptIndex: trace.attemptIndex }
-      : {}),
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: { attemptId, strategy: attempt.strategy },
     error: error ?? null,
   });
@@ -166,12 +154,8 @@ export async function verifyRecovery(
     runId: attempt.runId,
     type: "RECOVERY_VERIFIED",
     status: "ok",
-    ...(trace?.parentEventId !== undefined
-      ? { parentEventId: trace.parentEventId }
-      : {}),
-    ...(trace?.attemptIndex !== undefined
-      ? { attemptIndex: trace.attemptIndex }
-      : {}),
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: {
       attemptId: attempt.id,
       incidentId: attempt.incidentId,
@@ -208,12 +192,8 @@ export async function abortIncident(
     runId: incident.runId,
     type: "ALERT",
     status: "error",
-    ...(trace?.parentEventId !== undefined
-      ? { parentEventId: trace.parentEventId }
-      : {}),
-    ...(trace?.attemptIndex !== undefined
-      ? { attemptIndex: trace.attemptIndex }
-      : {}),
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: { incidentId, reason },
     error: reason,
   });
@@ -242,12 +222,8 @@ export async function requestApproval(
     runId: incident.runId,
     type: "APPROVAL_REQUESTED",
     status: "running",
-    ...(trace?.parentEventId !== undefined
-      ? { parentEventId: trace.parentEventId }
-      : {}),
-    ...(trace?.attemptIndex !== undefined
-      ? { attemptIndex: trace.attemptIndex }
-      : {}),
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: {
       incidentId: incident.id,
       failureType: incident.failureType,
