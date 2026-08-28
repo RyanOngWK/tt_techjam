@@ -1555,3 +1555,56 @@ body.agentguard-dragging:not(.agentguard-resizing-nw):not(.agentguard-resizing-n
   }
 }
 
+.agentguard-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.agentguard-tab {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 6px 12px;
+  opacity: 0.6;
+  font-size: 12px;
+}
+
+.agentguard-tab.is-active {
+  opacity: 1;
+  border-bottom: 2px solid currentColor;
+}
+
+.run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.run-list-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr repeat(3, 0.9fr);
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 6px 4px;
+  text-align: left;
+}
+
+.run-list-row:hover {
+  background: rgba(26, 26, 24, 0.05);
+}
+
+.run-list-status.is-failed {
+  color: var(--red);
+}
+

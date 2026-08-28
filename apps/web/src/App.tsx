@@ -17,6 +17,7 @@ import type {
   Incident,
   Message,
   RecoveryAttempt,
+  RunListItem,
   SystemInfo,
   TraceEvent,
 } from "./types";
@@ -87,10 +88,14 @@ export default function App() {
     null,
   );
   const [windowGeometry, setWindowGeometry] = useState<WindowGeometry>(() => loadGeometry());
+  const [agentGuardTab, setAgentGuardTab] = useState<"trace" | "runs">("trace");
+  const [runList, setRunList] = useState<RunListItem[]>([]);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const pendingRunSelectionRef = useRef<string | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
   const dragSession = useRef<
     | {
         mode: "move";
@@ -108,6 +113,7 @@ export default function App() {
     | null
   >(null);
   selectedIdRef.current = selectedId;
+  activeRunIdRef.current = activeRun?.id ?? null;
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -158,6 +164,18 @@ export default function App() {
   }, [bootstrap]);
 
   useEffect(() => {
+    const preservedRunId = pendingRunSelectionRef.current;
+    if (preservedRunId) {
+      pendingRunSelectionRef.current = null;
+      if (!selectedId) {
+        setMessages([]);
+        return;
+      }
+      void refreshMessages(selectedId).catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      );
+      return;
+    }
     setActiveRun(null);
     setTraceEvents([]);
     setIncidents([]);
@@ -202,6 +220,20 @@ export default function App() {
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
+
+  useEffect(() => {
+    if (agentGuardTab !== "runs") return;
+    let cancelled = false;
+    void api
+      .listRuns()
+      .then((result) => {
+        if (!cancelled) setRunList(result.runs);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [agentGuardTab]);
 
   useEffect(() => {
     if (!activeRun || !isActiveRunStatus(activeRun.status)) return;
@@ -408,8 +440,10 @@ export default function App() {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
         const result = await api.run(runId);
-        if (selectedIdRef.current === agentId) setActiveRun(result.run);
-        await refreshAgentGuard(runId).catch(() => undefined);
+        if (activeRunIdRef.current === runId) {
+          if (selectedIdRef.current === agentId) setActiveRun(result.run);
+          await refreshAgentGuard(runId).catch(() => undefined);
+        }
         if (!["queued", "running", "recovering", "awaiting_approval"].includes(result.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
@@ -418,6 +452,29 @@ export default function App() {
     } finally {
       pollingRunIds.current.delete(runId);
     }
+  };
+
+  const openRunFromList = (item: RunListItem) => {
+    void api
+      .run(item.id)
+      .then((result) => {
+        if (!mountedRef.current) return;
+        if (selectedId !== item.agentId) {
+          pendingRunSelectionRef.current = item.id;
+          selectedIdRef.current = item.agentId;
+          setSelectedId(item.agentId);
+        }
+        setActiveRun(result.run);
+        activeRunIdRef.current = result.run.id;
+        void refreshAgentGuard(item.id);
+        if (isActiveRunStatus(result.run.status)) {
+          void pollRun(item.id, item.agentId);
+        }
+        setAgentGuardTab("trace");
+      })
+      .catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      );
   };
 
   const injectFailure = async (
@@ -1071,6 +1128,28 @@ export default function App() {
             </div>
           ) : null}
           <div className="agentguard-body">
+            <div className="agentguard-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={agentGuardTab === "trace"}
+                className={agentGuardTab === "trace" ? "agentguard-tab is-active" : "agentguard-tab"}
+                onClick={() => setAgentGuardTab("trace")}
+              >
+                Trace
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={agentGuardTab === "runs"}
+                className={agentGuardTab === "runs" ? "agentguard-tab is-active" : "agentguard-tab"}
+                onClick={() => setAgentGuardTab("runs")}
+              >
+                Runs
+              </button>
+            </div>
+            {agentGuardTab === "trace" ? (
+              <>
             {latestDiagnosis ? (
               <div className="diagnosis-card">
                 <div className="diagnosis-card-head">
@@ -1222,6 +1301,32 @@ export default function App() {
                 </ul>
               </div>
             </div>
+              </>
+            ) : (
+              <ul className="run-list">
+                {runList.length === 0 ? (
+                  <li className="muted">No runs yet</li>
+                ) : (
+                  runList.map((item) => (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        className="run-list-row"
+                        onClick={() => openRunFromList(item)}
+                      >
+                        <span className="run-list-agent">{item.agentName}</span>
+                        <span className={"run-list-status is-" + item.status}>{item.status}</span>
+                        <span className="run-list-metric">{item.spanCount} spans</span>
+                        <span className="run-list-metric">{item.errorCount} errors</span>
+                        <span className="run-list-metric">
+                          {item.tokensUsed}/{item.tokenBudget}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
           </div>
           <div
             className="agentguard-resize-handle agentguard-resize-nw"

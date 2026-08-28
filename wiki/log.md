@@ -1,5 +1,12 @@
 # Wiki Log
 
+## [2026-08-28] ingest | AgentGuard run list tab
+
+The floating AgentGuard window now has Trace and Runs tabs. Opening Runs calls
+`api.listRuns()`; clicking a row loads that run's trace (and polls if still
+active) and selects its playground agent without clobbering the chosen run.
+Updated [agentguard.md](agentguard.md) and [architecture.md](architecture.md).
+
 ## [2026-08-28] ingest | Web span types and API client
 
 Web `TraceEvent` now includes category, actor, endedAt, durationSource, and
