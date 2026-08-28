@@ -425,7 +425,7 @@ export default function App() {
         api.recoveries(runId),
         api.diagnoses(runId),
       ]);
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || activeRunIdRef.current !== runId) return;
     setTraceEvents(eventsResult.events);
     setIncidents(incidentsResult.incidents);
     setRecoveries(recoveriesResult.recoveries);
@@ -466,7 +466,7 @@ export default function App() {
         }
         setActiveRun(result.run);
         activeRunIdRef.current = result.run.id;
-        void refreshAgentGuard(item.id);
+        void refreshAgentGuard(item.id).catch(() => undefined);
         if (isActiveRunStatus(result.run.status)) {
           void pollRun(item.id, item.agentId);
         }

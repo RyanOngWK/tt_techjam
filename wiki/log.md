@@ -1,5 +1,12 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Drop stale AgentGuard refresh after run-list selection
+
+`refreshAgentGuard` now ignores in-flight results when `activeRunIdRef` no
+longer matches the requested run, so a previous run's Promise.all cannot
+overwrite the timeline after the user picks another row. Updated
+[agentguard.md](agentguard.md).
+
 ## [2026-08-28] ingest | AgentGuard run list tab
 
 The floating AgentGuard window now has Trace and Runs tabs. Opening Runs calls
