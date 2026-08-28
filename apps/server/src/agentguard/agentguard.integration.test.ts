@@ -854,6 +854,32 @@ describe("AgentGuard integration", () => {
     expect(roots).toHaveLength(1);
     expect(roots[0]?.type).toBe("RUN_STARTED");
   });
+
+  it("cancels mid-turn from span data on a first attempt", async () => {
+    let calls = 0;
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        if (calls === 1) {
+          for (let index = 0; index < 40; index += 1) {
+            await request.onEvent?.({ type: "MODEL_CALL", status: "ok" });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return { output: "done", threadId: "t", usage: null };
+      },
+      cancel: async () => true,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    await service.updateAgentGuardSettings({ tokenBudget: 20_000 });
+    const agent = await service.createAgent({ name: "Budget" });
+    const { run } = await service.sendMessage(agent.id, "long task");
+    await expect.poll(() =>
+      service.getEvents(run.id).some((event) => event.type === "BUDGET_PROJECTED_EXCEED"),
+    ).toBe(true);
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
 });
 
 describe("AgentGuard fixtures", () => {

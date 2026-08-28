@@ -24,7 +24,7 @@ operator approval for hard exceed / second crash.
 | Detect | `runtime_crash`, `tool_timeout`, `budget_exceeded`, `budget_projected_exceeded`, … |
 | Recover | `retry`, `restart_resume`, `compress_resume` restore latest checkpoint; verdict updates the diagnosis (`acted` → `verified`/`aborted`/`awaiting_approval`) |
 | Budget (hard) | `AGENTGUARD_TOKEN_BUDGET`; inject via `POST .../fail` `{type:budget_exceeded}` → HITL |
-| Budget (soft) | BudgetPolicy tiers 50%/85%; prompt wrap; mid-turn projection cancel; `BUDGET_COMPRESSED` |
+| Budget (soft) | BudgetPolicy tiers 50%/85%; prompt wrap; mid-turn projection cancel (tier from `Math.max(tokensUsed, projected)` so a first attempt can enter `strict`); `BUDGET_COMPRESSED` |
 | HITL | `awaiting_approval` + `POST /api/runs/:id/approve`; second crash gated by `AGENTGUARD_REQUIRE_APPROVAL_AFTER_CRASHES` |
 | UI | Floating AgentGuard window (drag/resize); timeline, diagnosis card, budget meters/tier, Approve/Abort, export |
 | Settings | Global policy modal + `GET/PATCH /api/agentguard/settings`; JsonStore overrides merge over env |
@@ -49,7 +49,8 @@ turn (or run when no turn exists), preserving one causal tree rooted at
 ## Implementation status note
 
 Hard post-turn budget + HITL and soft BudgetPolicy (pre-turn wrap/gate,
-mid-turn projection cancel, compress_resume) are implemented in
+mid-turn projection cancel with tier from `Math.max(tokensUsed, projected)`,
+compress_resume) are implemented in
 `budget-policy.ts` and `agent-service.ts`. Automated diagnosis
 (`diagnostic.ts`, DB v3 `diagnoses`, `GET /api/runs/:id/diagnoses`, diagnosis
 card UI) is implemented and covered by `diagnostic.test.ts` +

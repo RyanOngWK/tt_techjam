@@ -87,6 +87,34 @@ describe("shouldCancelMidTurn", () => {
       }),
     ).toBe(false);
   });
+
+  it("reaches the strict tier from projected usage on a fresh run", () => {
+    const estimates = {
+      softRatio: 0.5,
+      strictRatio: 0.85,
+      estModelTokens: 2000,
+      estToolTokens: 1000,
+      charsPerToken: 4,
+      nextTurnEstimate: 8000,
+    };
+    const projected = projectUsage({
+      tokensUsed: 0,
+      modelCalls: 25,
+      toolCalls: 0,
+      streamBytes: 0,
+      estimates,
+    });
+    expect(projected).toBe(50_000);
+    expect(budgetTier(0, 50_000, estimates)).toBe("normal");
+    expect(budgetTier(Math.max(0, projected), 50_000, estimates)).toBe("strict");
+    expect(
+      shouldCancelMidTurn({
+        projected: projected + 2000,
+        tokenBudget: 50_000,
+        tier: budgetTier(Math.max(0, projected), 50_000, estimates),
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("shouldBlockPreTurn", () => {

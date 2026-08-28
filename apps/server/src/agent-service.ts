@@ -576,11 +576,6 @@ export class AgentService {
 
               if (!midTurnCancelIssued) {
                 const liveRun = this.getRun(run.id);
-                const tier = budgetTier(
-                  liveRun.tokensUsed,
-                  liveRun.tokenBudget,
-                  estimates,
-                );
                 const projected = projectUsage({
                   tokensUsed: liveRun.tokensUsed,
                   modelCalls,
@@ -588,6 +583,11 @@ export class AgentService {
                   streamBytes,
                   estimates,
                 });
+                const tier = budgetTier(
+                  Math.max(liveRun.tokensUsed, projected),
+                  liveRun.tokenBudget,
+                  estimates,
+                );
                 if (
                   shouldCancelMidTurn({
                     projected,

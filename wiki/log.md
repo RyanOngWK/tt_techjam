@@ -1,5 +1,12 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Mid-turn budget tier from projected usage
+
+Mid-turn `budgetTier` now uses `Math.max(tokensUsed, projected)` so a first
+attempt with `tokensUsed === 0` can still reach `strict` and emit
+`BUDGET_PROJECTED_EXCEED` from accumulated span data. Pre-turn tier still uses
+committed `tokensUsed`. Updated [agentguard.md](agentguard.md).
+
 ## [2026-08-28] update | Visible short-secret skip and pre-truncate redaction
 
 `registerSecretValues` now takes labeled config-field entries and reports
