@@ -14,14 +14,22 @@ const SENSITIVE_PATTERNS: RegExp[] = [
 ];
 
 export function registerSecretValues(
-  values: Array<string | null | undefined>,
-): void {
+  values: Array<{ label: string; value: string | null | undefined }>,
+): { skippedTooShort: string[]; registered: number } {
   let changed = false;
-  for (const value of values) {
-    if (typeof value !== "string" || value.length < MIN_SECRET_LENGTH) continue;
+  const skippedTooShort: string[] = [];
+  let registered = 0;
+  for (const entry of values) {
+    const value = entry.value;
+    if (typeof value !== "string" || value.length === 0) continue;
+    if (value.length < MIN_SECRET_LENGTH) {
+      skippedTooShort.push(entry.label);
+      continue;
+    }
     if (!knownSecretValues.has(value)) {
       knownSecretValues.add(value);
       changed = true;
+      registered += 1;
     }
   }
   if (changed) {
@@ -29,6 +37,13 @@ export function registerSecretValues(
       (left, right) => right.length - left.length,
     );
   }
+  return { skippedTooShort, registered };
+}
+
+/** Test-scoped: clears registered secrets so unit tests cannot leak into each other. */
+export function __resetSecretRegistryForTests(): void {
+  knownSecretValues.clear();
+  sortedSecretValues = [];
 }
 
 export function redactString(value: string): string {

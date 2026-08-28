@@ -121,6 +121,33 @@ describe("codex item extraction", () => {
     expect(String(parsed.streamEvents[1]?.metadata?.preview)).toHaveLength(200);
   });
 
+  it("passes an exactly 200-character preview through unchanged", () => {
+    const parsed = emptyParsedEvents();
+    const exact = "y".repeat(200);
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: exact,
+          aggregated_output: exact,
+        },
+      }),
+      parsed,
+    );
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: exact },
+      }),
+      parsed,
+    );
+
+    expect(parsed.streamEvents[0]?.metadata?.command).toBe(exact);
+    expect(parsed.streamEvents[0]?.metadata?.outputPreview).toBe(exact);
+    expect(parsed.streamEvents[1]?.metadata?.preview).toBe(exact);
+  });
+
   it("marks a non-zero command exit as an error span", () => {
     const parsed = emptyParsedEvents();
     parseCodexEventLine(

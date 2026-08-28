@@ -113,7 +113,16 @@ export class AgentService {
   ) {}
 
   async initialize(): Promise<void> {
-    registerSecretValues([this.config.arkApiKey, this.config.authToken]);
+    const { skippedTooShort } = registerSecretValues([
+      { label: "arkApiKey", value: this.config.arkApiKey },
+      { label: "authToken", value: this.config.authToken },
+    ]);
+    if (skippedTooShort.length > 0) {
+      console.warn(
+        "Secret values too short to register for redaction: " +
+          skippedTooShort.join(", "),
+      );
+    }
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {

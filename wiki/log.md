@@ -1,5 +1,13 @@
 # Wiki Log
 
+## [2026-08-28] update | Visible short-secret skip and pre-truncate redaction
+
+`registerSecretValues` now takes labeled config-field entries and reports
+skipped values shorter than 8 characters without echoing the secret.
+`AgentService.initialize` warns those field labels via `console.warn`. Codex
+item previews redact before truncating to 200 characters. Updated
+[agentguard.md](agentguard.md).
+
 ## [2026-08-28] update | Value-based trace redaction
 
 Registered configured Ark and application auth credential values during

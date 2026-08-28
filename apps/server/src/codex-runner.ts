@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
+import { redactString } from "./agentguard/redact.js";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import type {
@@ -45,8 +46,12 @@ export function buildCodexArgs(
 
 const PREVIEW_LIMIT = 200;
 
+// Redaction runs before truncation so a secret straddling PREVIEW_LIMIT cannot
+// be reduced to a partial value that literal matching no longer recognizes.
 function preview(value: unknown): string | undefined {
-  return typeof value === "string" ? value.slice(0, PREVIEW_LIMIT) : undefined;
+  return typeof value === "string"
+    ? redactString(value).slice(0, PREVIEW_LIMIT)
+    : undefined;
 }
 
 function mapItemToStreamEvent(

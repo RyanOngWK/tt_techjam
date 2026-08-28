@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentService } from "../agent-service.js";
 import { loadConfig } from "../config.js";
 import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
@@ -283,6 +283,29 @@ describe("AgentGuard integration", () => {
     await expect.poll(() => service.getDiagnoses(run.id)[0]?.status).toBe("verified");
   });
 
+  it("warns which config field is too short to redact without echoing its value", async () => {
+    const runner: AgentRunner = {
+      async run(): Promise<RunnerResult> {
+        return { output: "done", threadId: "t-warn", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const warnings: string[] = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args) => {
+      warnings.push(args.map((arg) => String(arg)).join(" "));
+    });
+    try {
+      await makeService(runner, { APP_AUTH_TOKEN: "zqx9j" });
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const text = warnings.join("\n");
+    expect(text).toContain("authToken");
+    expect(text).not.toContain("zqx");
+  });
+
   it("redacts secrets from stored events", async () => {
     const runner: AgentRunner = {
       async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -294,6 +317,15 @@ describe("AgentGuard integration", () => {
             note: "Bearer tokensecretvalue",
           },
         });
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: {
+            itemType: "command_execution",
+            command: "printenv",
+            outputPreview: "Bearer tokensecretvalue",
+          },
+        });
         return { output: "done", threadId: "t1", usage: null };
       },
       cancel: async () => false,
@@ -303,12 +335,19 @@ describe("AgentGuard integration", () => {
     const agent = await service.createAgent({ name: "Redact" });
     const { run } = await service.sendMessage(agent.id, "secret");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
-    const modelEvent = service
-      .getEvents(run.id)
-      .find((event) => event.type === "MODEL_CALL" && event.metadata.ARK_API_KEY);
+    const events = service.getEvents(run.id);
+    const modelEvent = events.find(
+      (event) => event.type === "MODEL_CALL" && event.metadata.ARK_API_KEY,
+    );
     expect(modelEvent?.metadata.ARK_API_KEY).toBe("[REDACTED]");
     expect(JSON.stringify(modelEvent?.metadata)).not.toContain("super-secret");
     expect(JSON.stringify(modelEvent?.metadata)).not.toContain("tokensecretvalue");
+
+    const commandEvent = events.find(
+      (event) => event.metadata.itemType === "command_execution",
+    );
+    expect(commandEvent).toBeDefined();
+    expect(String(commandEvent?.metadata.outputPreview)).toContain("[REDACTED]");
   });
 
   it("redacts a bare configured Ark API key from command output before persistence", async () => {
@@ -350,6 +389,60 @@ describe("AgentGuard integration", () => {
     const serializedEvents = JSON.stringify(service.getEvents(run.id));
     expect(serializedEvents).not.toContain(secret);
     expect(serializedEvents).toContain("[REDACTED]");
+  });
+
+  it("leaves no recoverable fragment of a secret that straddles the preview boundary", async () => {
+    const secret = "boundaryLeakCanary_0123456789_abcdefghijk";
+    // Truncating first would keep exactly the first 30 characters of the secret,
+    // which literal value matching can no longer recognize afterwards.
+    const fragment = secret.slice(0, 30);
+    const output = "o".repeat(170) + secret;
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        const parsed: ParsedEvents = {
+          messages: [],
+          threadId: null,
+          usage: null,
+          errors: [],
+          streamEvents: [],
+        };
+        parseCodexEventLine(
+          JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command: "printenv ARK_API_KEY",
+              aggregated_output: output,
+              exit_code: 0,
+            },
+          }),
+          parsed,
+        );
+        for (const event of parsed.streamEvents) {
+          await request.onEvent?.(event);
+        }
+        return { output: "done", threadId: "t-boundary", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, { ARK_API_KEY: secret });
+    const agent = await service.createAgent({ name: "BoundarySecret" });
+    const { run } = await service.sendMessage(agent.id, "show environment");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const commandEvent = service
+      .getEvents(run.id)
+      .find((event) => event.metadata.itemType === "command_execution");
+    expect(commandEvent).toBeDefined();
+    const outputPreview = String(commandEvent?.metadata.outputPreview);
+    expect(outputPreview).toContain("[REDACTED]");
+    expect(outputPreview.length).toBeLessThanOrEqual(200);
+    expect(outputPreview).not.toContain(fragment);
+
+    const serializedEvents = JSON.stringify(service.getEvents(run.id));
+    expect(serializedEvents).not.toContain(fragment);
+    expect(serializedEvents).not.toContain(secret);
   });
 
   it("restores the latest checkpoint on timeout retry", async () => {
