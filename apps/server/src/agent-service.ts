@@ -1245,30 +1245,38 @@ export class AgentService {
     attemptIndex: number,
   ): Promise<void> {
     const agent = this.getAgent(agentId);
-    const checkpoint = await createWorkspaceCheckpoint({
-      dataDirectory: this.config.dataDirectory,
-      runId,
-      agentId,
-      workspacePath: agent.workspacePath,
-      codexThreadId: agent.codexThreadId,
-      boundary,
-    });
-    await this.store.mutate(async (database) => {
-      database.checkpoints.push(checkpoint);
-      database.checkpoints = await pruneCheckpoints(database.checkpoints, runId);
-    });
-    await appendTraceEvent(this.store, {
-      runId,
-      type: "CHECKPOINT_CREATED",
-      status: "ok",
-      parentEventId,
-      attemptIndex,
-      metadata: {
-        checkpointId: checkpoint.id,
+    try {
+      const checkpoint = await createWorkspaceCheckpoint({
+        dataDirectory: this.config.dataDirectory,
+        runId,
+        agentId,
+        workspacePath: agent.workspacePath,
+        codexThreadId: agent.codexThreadId,
         boundary,
-        codexThreadId: checkpoint.codexThreadId,
-      },
-    });
+      });
+      await this.store.mutate(async (database) => {
+        database.checkpoints.push(checkpoint);
+        database.checkpoints = await pruneCheckpoints(database.checkpoints, runId);
+      });
+      await appendTraceEvent(this.store, {
+        runId,
+        type: "CHECKPOINT_CREATED",
+        status: "ok",
+        parentEventId,
+        attemptIndex,
+        metadata: {
+          checkpointId: checkpoint.id,
+          boundary,
+          codexThreadId: checkpoint.codexThreadId,
+        },
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Workspace checkpoint failed";
+      console.warn(
+        `[AgentGuard] checkpoint skipped (${boundary}, run ${runId}): ${message}`,
+      );
+    }
   }
 
   private async handleFailure(input: {
