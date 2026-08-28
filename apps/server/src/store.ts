@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { actorForEventType, categoryForEventType } from "./agentguard/span-taxonomy.js";
 import type { AgentRun, Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
@@ -32,12 +33,20 @@ function migrateDatabase(raw: unknown): Database {
         ? null
         : run.pendingApprovalIncidentId,
   }));
+  const events = (parsed.events ?? []).map((event) => ({
+    ...event,
+    category: event.category ?? categoryForEventType(event.type),
+    actor: event.actor ?? actorForEventType(event.type),
+    endedAt: event.endedAt === undefined ? null : event.endedAt,
+    durationSource: event.durationSource === undefined ? null : event.durationSource,
+    attemptIndex: typeof event.attemptIndex === "number" ? event.attemptIndex : 0,
+  }));
   return {
     version: 3,
     agents: parsed.agents,
     messages: parsed.messages ?? [],
     runs,
-    events: parsed.events ?? [],
+    events,
     incidents: parsed.incidents ?? [],
     recoveryAttempts: parsed.recoveryAttempts ?? [],
     diagnoses: parsed.diagnoses ?? [],
