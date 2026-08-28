@@ -747,6 +747,11 @@ describe("AgentGuard integration", () => {
       async run(request: RunnerRequest): Promise<RunnerResult> {
         calls += 1;
         await request.onEvent?.({
+          type: "MODEL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        await request.onEvent?.({
           type: "TOOL_CALL",
           status: "ok",
           metadata: { step: calls },
@@ -798,6 +803,17 @@ describe("AgentGuard integration", () => {
     const roots = buildSpanTree(events);
     expect(roots).toHaveLength(1);
     expect(roots[0]?.type).toBe("RUN_STARTED");
+    for (const category of [
+      "orchestration",
+      "model_call",
+      "checkpoint",
+      "policy_decision",
+      "recovery",
+    ] as const) {
+      expect(events.some((event) => event.category === category), category).toBe(
+        true,
+      );
+    }
   });
 
   it("parents a post-recovery budget error to the recovered turn", async () => {
@@ -891,11 +907,27 @@ describe("AgentGuard fixtures", () => {
     );
     const crash = JSON.parse(
       await readFile(path.join(fixturesRoot, "crash-then-recover.json"), "utf8"),
-    ) as { events: string[] };
+    ) as {
+      events: string[];
+      shape: {
+        rootType: string;
+        requiredCategories: string[];
+        nestedUnderFailingSpan: string[];
+      };
+    };
     const secrets = JSON.parse(
       await readFile(path.join(fixturesRoot, "secrets-redacted.json"), "utf8"),
     ) as { forbidden: string[] };
     expect(crash.events).toContain("RECOVERY_VERIFIED");
+    expect(crash.events).toContain("TURN");
+    expect(crash.shape.rootType).toBe("RUN_STARTED");
+    expect(crash.shape.requiredCategories).toEqual([
+      "orchestration",
+      "model_call",
+      "checkpoint",
+      "policy_decision",
+      "recovery",
+    ]);
     expect(secrets.forbidden.length).toBeGreaterThan(0);
     const soft = JSON.parse(
       await readFile(path.join(fixturesRoot, "budget-soft-compress.json"), "utf8"),

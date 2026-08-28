@@ -13,6 +13,7 @@ claims until the relevant page is updated.
 - [Fastify application](../apps/server/src/app.ts): HTTP API and request security.
 - [Agent service](../apps/server/src/agent-service.ts): lifecycle and run orchestration.
 - [Domain types](../apps/server/src/types.ts): persisted domain model and runner seam.
+- [AgentGuard fixtures](../apps/server/fixtures/agentguard/): golden type sequences and tree-shape contracts.
 - [Workspace manager](../apps/server/src/workspace.ts): agent workspace behavior.
 - [Configuration](../apps/server/src/config.ts): environment contract and safeguards.
 - [Runner factory](../apps/server/src/runner-factory.ts): runtime-provider selection.

@@ -1,5 +1,14 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Redaction evidence and fixture shapes
+
+`redaction-evidence.test.ts` serializes a completed run and asserts a configured
+`ARK_API_KEY` never appears in any span (command, output preview, or error).
+`crash-then-recover.json` now includes `TURN` after `RUN_STARTED` and a `shape`
+block (`rootType`, `requiredCategories`). Production redactor unchanged — the
+evidence test passed on first run. Updated [agentguard.md](agentguard.md) and
+[sources.md](sources.md).
+
 ## [2026-08-28] ingest | Span tree 404 for unknown runs
 
 `getSpanTree` now calls `getRun` first, so `GET /api/runs/:id/events?tree=true`
