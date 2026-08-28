@@ -8,6 +8,7 @@
     "INCIDENT_OPENED",
     "DIAGNOSIS_ISSUED",
     "RECOVERY_STARTED",
+    "CHECKPOINT_RESTORED",
     "RECOVERY_COMPLETED",
     "RECOVERY_VERIFIED",
     "DIAGNOSIS_VERDICT",
@@ -22,6 +23,6 @@
       "policy_decision",
       "recovery"
     ],
-    "nestedUnderFailingSpan": ["INCIDENT_OPENED", "RECOVERY_STARTED"]
+    "nestedUnderFailingSpan": ["INCIDENT_OPENED", "RECOVERY_STARTED", "CHECKPOINT_RESTORED"]
   }
 }

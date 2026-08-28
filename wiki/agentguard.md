@@ -42,7 +42,7 @@ Diagram: [architecture one-pager](../docs/agentguard-architecture.md) and
 | Trace | Redacted, single-root span tree: configured Ark/API auth credential values are registered before store initialization and scrubbed by literal value in addition to pattern-based secret detection; values shorter than 8 characters are skipped and `AgentService.initialize` warns with config field labels via `console.warn` (the service is constructed before Fastify exists); Codex `command`/`preview`/`outputPreview` attributes are redacted then truncated to 200 characters before persistence; each runner attempt is a measured `TURN` parent for emitted model/tool spans; Codex command spans preserve truncated command/output attributes and report non-zero exits as errors, while child durations use the labeled inter-item completion delta; failure `ERROR` nodes parent incident, diagnosis, and recovery activity, while verification parents to the successful recovery turn; quiet turns remain childless rather than fabricating telemetry; `GET /api/runs` lists runs newest-first with summary counts; `GET /api/runs/:id/events` accepts `category`, `actor`, `status`, `since`, `tree=true`, and `format=download`; unknown run IDs 404 for both the flat list and `tree=true`. `redaction-evidence.test.ts` serializes a completed run that leaked `ARK_API_KEY` into command, output preview, and error and asserts the secret never appears. Golden `apps/server/fixtures/agentguard/crash-then-recover.json` records the type sequence (including `TURN`) plus a `shape` block (`rootType: RUN_STARTED`, required categories) |
 | Diagnose | Deterministic `DiagnosisRecord` per incident: root cause, evidence, confidence, failure signature + recurrence count, template suggestions; `GET /api/runs/:id/diagnoses` |
 | Detect | `runtime_crash`, `tool_timeout`, `budget_exceeded`, `budget_projected_exceeded`, …; `POST .../fail` `{type:runtime_crash}` calls optional `AgentRunner.kill` (container force-remove without `cancelled`) or falls back to cancel + injection flag |
-| Recover | `retry`, `restart_resume`, `compress_resume` restore latest checkpoint; verdict updates the diagnosis (`acted` → `verified`/`aborted`/`awaiting_approval`) |
+| Recover | `retry`, `restart_resume`, `compress_resume` restore latest checkpoint and append `CHECKPOINT_RESTORED` under the same failing span as `RECOVERY_STARTED`; verdict updates the diagnosis (`acted` → `verified`/`aborted`/`awaiting_approval`) |
 | Budget (hard) | `AGENTGUARD_TOKEN_BUDGET`; inject via `POST .../fail` `{type:budget_exceeded}` → HITL |
 | Budget (soft) | BudgetPolicy tiers 50%/85%; prompt wrap; mid-turn projection cancel (tier from `Math.max(tokensUsed, projected)` so a first attempt can enter `strict`); `BUDGET_COMPRESSED` |
 | HITL | `awaiting_approval` + `POST /api/runs/:id/approve`; second crash gated by `AGENTGUARD_REQUIRE_APPROVAL_AFTER_CRASHES` |
@@ -57,8 +57,9 @@ incident (`DIAGNOSIS_ISSUED`). A checkpointed recovery attaches a state delta
 and moves the diagnosis to `acted`. `RECOVERY_VERIFIED` / budget raise marks it
 `verified`; abort marks it `aborted` (`DIAGNOSIS_VERDICT`); approval requests
 mark it `awaiting_approval`. Diagnosis text is rule-based (ADR-001) and
-redacted before persistence. The incident, diagnosis, and recovery events are
-children of the corresponding `ERROR`; that error is a child of the failed
+redacted before persistence. The incident, diagnosis, recovery, and
+`CHECKPOINT_RESTORED` events are children of the corresponding `ERROR`; that
+error is a child of the failed
 turn (or run when no turn exists), preserving one causal tree rooted at
 `RUN_STARTED`.
 

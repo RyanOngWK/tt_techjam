@@ -185,3 +185,16 @@ one-pager [docs/agentguard-architecture.md](../docs/agentguard-architecture.md).
 Created the wiki schema and initial pages from the repository README,
 architecture documentation, server implementation, configuration, and
 contribution guide.
+
+## [2026-08-28] ingest | Restored-checkpoint spans and web test gate
+
+`startCheckpointedRecovery` now appends `CHECKPOINT_RESTORED` after a successful
+`restoreWorkspaceCheckpoint`, parented to the same failing span as
+`RECOVERY_STARTED`, with `checkpointId` (and workspace/thread) metadata. Root
+`npm test` / `npm run check` runs both workspaces. Kill-path crash classification
+(`AgentRunner.kill`, non-zero exit wording on the persisted span) is covered by
+an integration test.
+
+Sources: [agent-service.ts](../apps/server/src/agent-service.ts),
+[package.json](../package.json),
+[agentguard.integration.test.ts](../apps/server/src/agentguard/agentguard.integration.test.ts).

@@ -1530,6 +1530,18 @@ export class AgentService {
         workspacePath: input.agent.workspacePath,
         checkpoint,
       });
+      await appendTraceEvent(this.store, {
+        runId: input.run.id,
+        type: "CHECKPOINT_RESTORED",
+        status: "ok",
+        parentEventId: input.parentEventId,
+        attemptIndex: input.attemptIndex,
+        metadata: {
+          checkpointId: checkpoint.id,
+          workspacePath: input.agent.workspacePath,
+          codexThreadId: checkpoint.codexThreadId,
+        },
+      });
       await this.store.mutate((database) => {
         const agent = database.agents.find((item) => item.id === input.agent.id);
         const run = database.runs.find((item) => item.id === input.run.id);

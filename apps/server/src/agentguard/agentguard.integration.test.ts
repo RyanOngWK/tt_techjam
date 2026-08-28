@@ -787,6 +787,12 @@ describe("AgentGuard integration", () => {
     expect(nested.some((event) => event.type === "RECOVERY_STARTED")).toBe(true);
     expect(nested.some((event) => event.type === "RECOVERY_COMPLETED")).toBe(true);
 
+    const restored = events.find((event) => event.type === "CHECKPOINT_RESTORED");
+    expect(restored).toBeDefined();
+    expect(restored?.parentEventId).not.toBeNull();
+    expect(restored?.parentEventId).toBe(failingId);
+    expect(restored?.metadata.checkpointId).toBeTruthy();
+
     const error = events.find((event) => event.id === failingId);
     const failedTurn = events.find((event) => event.id === error?.parentEventId);
     expect(error?.type).toBe("ERROR");
@@ -814,6 +820,63 @@ describe("AgentGuard integration", () => {
         true,
       );
     }
+  });
+
+  it("classifies a kill-path crash on a persisted span and restores the checkpoint", async () => {
+    let calls = 0;
+    let cancelCalled = false;
+    let rejectFirst!: (error: Error) => void;
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) return firstHang;
+        return { output: "recovered", threadId: "thread-kill", usage: null };
+      },
+      cancel: async () => {
+        cancelCalled = true;
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      async kill() {
+        rejectFirst(new Error("Runtime exited with code 137"));
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "KillPath" });
+    await writeFile(path.join(agent.workspacePath, "work.txt"), "before", "utf8");
+    const { run } = await service.sendMessage(agent.id, "do work");
+    await expect
+      .poll(() =>
+        service.getEvents(run.id).some((event) => event.type === "CHECKPOINT_CREATED"),
+      )
+      .toBe(true);
+    await service.injectFailure(run.id, "runtime_crash");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(cancelCalled).toBe(false);
+    expect(calls).toBeGreaterThanOrEqual(2);
+    const events = service.getEvents(run.id);
+    const crashSpan = events.find(
+      (event) =>
+        (event.type === "ERROR" || (event.type === "TURN" && event.status === "error")) &&
+        typeof event.error === "string" &&
+        /137|exited with code/i.test(event.error),
+    );
+    expect(crashSpan).toBeDefined();
+    expect(crashSpan?.error).toMatch(/137|exited with code/i);
+    const restored = events.find((event) => event.type === "CHECKPOINT_RESTORED");
+    expect(restored).toBeDefined();
+    expect(restored?.parentEventId).not.toBeNull();
   });
 
   it("parents a post-recovery budget error to the recovered turn", async () => {
