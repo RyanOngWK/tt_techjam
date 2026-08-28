@@ -1,5 +1,27 @@
 # Wiki Log
 
+## [2026-08-28] update | De-flaked AgentGuard tests and closed API coverage gaps
+
+Fixed two flaky test races that intermittently broke `npm run check` under full
+suite runs: the timeout-abort integration test polled run status "failed" but
+asserted the `ALERT` span immediately (status is set in one `store.mutate`,
+`ALERT` appended in a second), and `afterEach` could `rm` temp dirs while the
+fire-and-forget `executeRun` still landed `RUN_COMPLETED`/`ALERT`/checkpoint
+writes, throwing `ENOTEMPTY`. Added `apps/server/src/test/settle.ts`
+(`removeTemporaryDirectories`, retry on transient `ENOTEMPTY`/`EBUSY`/`EAGAIN`)
+and used it in all seven temp-dir test files. Added API tests covering
+`GET /api/runs/:id/events?tree=true&status=error` (failing spans stay nested
+under `matched:false` scaffold ancestors), `format=download` export redaction
+with attachment disposition, and `format=json` disposition; added web tests for
+client `buildSpanTree` errors-only pruning. `npm run check` now: 122 server +
+15 web tests, both production builds. Live POC verified: nested span tree,
+real container-kill crash (`docker` `rm --force` → exit 137 on a persisted
+`TURN`/`ERROR` span with nested `INCIDENT_OPENED`, `DIAGNOSIS_ISSUED`,
+`RECOVERY_STARTED`, `CHECKPOINT_RESTORED`, `RECOVERY_COMPLETED`), recovered
+turn with `RECOVERY_VERIFIED`, errors-only filter dims `RUN_STARTED`/recovered
+`TURN` while keeping errors nested, run list summaries, per-run event isolation
+in the Runs tab, and secret-free JSON export.
+
 ## [2026-08-28] ingest | Glass Box span model
 
 Repositioned AgentGuard onto the Glass Box track. `TraceEvent` became a span

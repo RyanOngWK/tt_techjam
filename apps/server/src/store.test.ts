@@ -1,17 +1,14 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeTemporaryDirectories } from "./test/settle.js";
 import { JsonStore } from "./store.js";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
-  );
+  await removeTemporaryDirectories(temporaryDirectories);
 });
 
 describe("JsonStore", () => {

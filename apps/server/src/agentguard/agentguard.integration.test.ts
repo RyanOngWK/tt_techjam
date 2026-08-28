@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { removeTemporaryDirectories } from "../test/settle.js";
 import { AgentService } from "../agent-service.js";
 import { loadConfig } from "../config.js";
 import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
@@ -15,12 +16,7 @@ import { buildSpanTree } from "./span-tree.js";
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  const { rm } = await import("node:fs/promises");
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
-  );
+  await removeTemporaryDirectories(temporaryDirectories);
 });
 
 async function makeService(
@@ -145,7 +141,11 @@ describe("AgentGuard integration", () => {
     await expect
       .poll(() => service.getRun(run.id).status, { timeout: 10_000 })
       .toBe("failed");
-    expect(service.getEvents(run.id).some((event) => event.type === "ALERT")).toBe(true);
+    await expect
+      .poll(() =>
+        service.getEvents(run.id).some((event) => event.type === "ALERT"),
+      )
+      .toBe(true);
     expect(service.getIncidents(run.id).some((item) => item.status === "aborted")).toBe(
       true,
     );

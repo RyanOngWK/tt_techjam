@@ -24,3 +24,4 @@ claims until the relevant page is updated.
 - [Web types](../apps/web/src/types.ts): client `TraceEvent`, `SpanNode`, `SpanFilter`, and `RunListItem` shapes.
 - [Web API client](../apps/web/src/api.ts): `request` helper, `listRuns`, `events`, `spanTree`.
 - [Web span tree](../apps/web/src/span-tree.ts): intentional client duplicate of server tree-building plus `formatDuration`.
+- [Test temp-dir cleanup](../apps/server/src/test/settle.ts): resilient `afterEach` removal for integration tests.
