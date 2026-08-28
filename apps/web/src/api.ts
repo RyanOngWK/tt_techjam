@@ -7,6 +7,8 @@ import type {
   Incident,
   Message,
   RecoveryAttempt,
+  RunListItem,
+  SpanNode,
   SystemInfo,
   TraceEvent,
 } from "./types";
@@ -91,6 +93,11 @@ export const api = {
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   events: (runId: string) =>
     request<{ events: TraceEvent[] }>("/api/runs/" + runId + "/events"),
+  listRuns: () => request<{ runs: RunListItem[] }>("/api/runs"),
+  spanTree: (runId: string, query?: string) =>
+    request<{ events: SpanNode[] }>(
+      "/api/runs/" + runId + "/events?tree=true" + (query ? "&" + query : ""),
+    ),
   incidents: (runId?: string) =>
     request<{ incidents: Incident[] }>(
       "/api/incidents" + (runId ? "?runId=" + runId : ""),

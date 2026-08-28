@@ -16,9 +16,13 @@ flowchart LR
 ## Control Plane
 
 The React client lists and configures agents, posts prompts, and polls a run
-until it finishes. The Fastify API validates request bodies, applies optional
+until it finishes. Web `TraceEvent`, `SpanNode`, and `RunListItem` types match
+the API contract. The client duplicates `buildSpanTree` (intentional, not a
+shared package) so filter chips can re-nest locally; `api.events` stays the
+live-trace fetch, while `api.listRuns` and `api.spanTree` wrap the run-list and
+`tree=true` endpoints. The Fastify API validates request bodies, applies optional
 bearer-token protection to API routes, and serves the built client in
-production. [Web client](../apps/web/src/App.tsx) | [API routes](../apps/server/src/app.ts)
+production. [Web client](../apps/web/src/App.tsx) | [Web types](../apps/web/src/types.ts) | [Web span tree](../apps/web/src/span-tree.ts) | [API client](../apps/web/src/api.ts) | [API routes](../apps/server/src/app.ts)
 
 `AgentService` owns lifecycle coordination and AgentGuard middleware (trace,
 detect, recover, proactive budget, HITL). It accepts one active run per agent, writes

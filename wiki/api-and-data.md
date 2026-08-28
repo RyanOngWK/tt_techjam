@@ -17,7 +17,13 @@ validated with Zod.
 Unknown run IDs 404 for both the flat list and `tree=true`. Comma-separated
 filter values are allowed. Responses are envelope objects, not bare arrays.
 
-Source: [Fastify application](../apps/server/src/app.ts) | [AgentService](../apps/server/src/agent-service.ts) | [Span tree](../apps/server/src/agentguard/span-tree.ts)
+The web client mirrors those shapes as `SpanCategory`, `ActorType`,
+`DurationSource`, `TraceEvent`, `SpanNode`, and `RunListItem`. `api.listRuns`
+calls `GET /api/runs`; `api.spanTree` calls `GET /api/runs/:id/events?tree=true`.
+The trace view still uses the flat `api.events` path and rebuilds the tree in
+the browser.
+
+Source: [Fastify application](../apps/server/src/app.ts) | [AgentService](../apps/server/src/agent-service.ts) | [Span tree](../apps/server/src/agentguard/span-tree.ts) | [Web types](../apps/web/src/types.ts) | [Web API client](../apps/web/src/api.ts) | [Web span tree](../apps/web/src/span-tree.ts)
 
 ## Lifecycle
 

@@ -49,16 +49,54 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export type SpanCategory =
+  | "orchestration"
+  | "model_call"
+  | "tool_call"
+  | "checkpoint"
+  | "policy_decision"
+  | "human_approval"
+  | "recovery";
+
+export type ActorType = "human" | "agent" | "middleware";
+
+export type DurationSource = "measured" | "inter_item_delta";
+
 export interface TraceEvent {
   id: string;
   runId: string;
   parentEventId: string | null;
   type: string;
-  status: string;
+  category: SpanCategory;
+  actor: ActorType;
+  status: "ok" | "error" | "running";
   timestamp: string;
+  endedAt: string | null;
   durationMs: number | null;
+  durationSource: DurationSource | null;
+  attemptIndex: number;
   metadata: Record<string, unknown>;
   error: string | null;
+}
+
+export interface SpanNode extends TraceEvent {
+  matched: boolean;
+  children: SpanNode[];
+}
+
+export interface RunListItem {
+  id: string;
+  agentId: string;
+  agentName: string;
+  status: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  spanCount: number;
+  errorCount: number;
+  incidentCount: number;
+  tokensUsed: number;
+  tokenBudget: number;
 }
 
 export interface Incident {

@@ -27,7 +27,7 @@ operator approval for hard exceed / second crash.
 | Budget (hard) | `AGENTGUARD_TOKEN_BUDGET`; inject via `POST .../fail` `{type:budget_exceeded}` → HITL |
 | Budget (soft) | BudgetPolicy tiers 50%/85%; prompt wrap; mid-turn projection cancel (tier from `Math.max(tokensUsed, projected)` so a first attempt can enter `strict`); `BUDGET_COMPRESSED` |
 | HITL | `awaiting_approval` + `POST /api/runs/:id/approve`; second crash gated by `AGENTGUARD_REQUIRE_APPROVAL_AFTER_CRASHES` |
-| UI | Floating AgentGuard window (drag/resize); timeline, diagnosis card, budget meters/tier, Approve/Abort, export |
+| UI | Floating AgentGuard window (drag/resize); timeline, diagnosis card, budget meters/tier, Approve/Abort, export; web types match the span contract; client `buildSpanTree` duplicates the server so filters re-nest locally |
 | Settings | Global policy modal + `GET/PATCH /api/agentguard/settings`; JsonStore overrides merge over env |
 
 ## Diagnosis lifecycle

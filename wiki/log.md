@@ -1,5 +1,14 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Web span types and API client
+
+Web `TraceEvent` now includes category, actor, endedAt, durationSource, and
+attemptIndex, plus `SpanNode` and `RunListItem`. The client duplicates
+`buildSpanTree` (O(n) cycle guard, intentional) and adds `api.listRuns` /
+`api.spanTree`. Updated [architecture.md](architecture.md),
+[api-and-data.md](api-and-data.md), [agentguard.md](agentguard.md), and
+[sources.md](sources.md).
+
 ## [2026-08-28] ingest | Redaction evidence and fixture shapes
 
 `redaction-evidence.test.ts` serializes a completed run and asserts a configured
