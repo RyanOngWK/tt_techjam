@@ -23,6 +23,7 @@
 - Submission gate: `npm run check` (typecheck + tests + builds) must pass.
 - Do not rebuild Agent CRUD, playground chat, or the runtime. Preserve baseline lifecycle.
 - Never log, persist, or display Ark API keys or BytePlus AK/SK.
+- **Adjudicated 2026-08-27:** `apps/web/src/span-tree.ts` deliberately reimplements the tree-building logic that also lives in `apps/server/src/agentguard/span-tree.ts`. This duplication is intentional and approved: the UI already polls events, so filter chips re-nest instantly with no round trip, loading state, or request race. Do not "fix" it by deleting the client copy or by extracting a shared package. Record the reason in a comment at the top of the web file.
 
 ## Parallelization
 
