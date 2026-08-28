@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "../agent-service.js";
 import { loadConfig } from "../config.js";
+import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
 import { RunCancelledError } from "../errors.js";
 import { JsonStore } from "../store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../types.js";
@@ -310,6 +311,47 @@ describe("AgentGuard integration", () => {
     expect(JSON.stringify(modelEvent?.metadata)).not.toContain("tokensecretvalue");
   });
 
+  it("redacts a bare configured Ark API key from command output before persistence", async () => {
+    const secret = "ark_live_A8+meta.chars/2026_secret";
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        const parsed: ParsedEvents = {
+          messages: [],
+          threadId: null,
+          usage: null,
+          errors: [],
+          streamEvents: [],
+        };
+        parseCodexEventLine(
+          JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command: "printenv ARK_API_KEY",
+              aggregated_output: secret,
+              exit_code: 0,
+            },
+          }),
+          parsed,
+        );
+        for (const event of parsed.streamEvents) {
+          await request.onEvent?.(event);
+        }
+        return { output: "done", threadId: "t-secret", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, { ARK_API_KEY: secret });
+    const agent = await service.createAgent({ name: "BareSecret" });
+    const { run } = await service.sendMessage(agent.id, "show environment");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const serializedEvents = JSON.stringify(service.getEvents(run.id));
+    expect(serializedEvents).not.toContain(secret);
+    expect(serializedEvents).toContain("[REDACTED]");
+  });
+
   it("restores the latest checkpoint on timeout retry", async () => {
     let calls = 0;
     const runner: AgentRunner = {
@@ -502,6 +544,73 @@ describe("AgentGuard integration", () => {
     expect(events.every((event) => event.metadata.synthesized === undefined)).toBe(true);
     expect(events.every((event) => event.category !== undefined)).toBe(true);
     expect(events.every((event) => event.actor !== undefined)).toBe(true);
+  });
+
+  it("leaves the first item duration unknown and derives later inter-item duration", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({
+          type: "MODEL_CALL",
+          status: "ok",
+          observedAt: 1_000,
+        });
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          observedAt: 1_250,
+        });
+        return { output: "done", threadId: "t-duration", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Durations" });
+    const { run } = await service.sendMessage(agent.id, "measure");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const itemEvents = service
+      .getEvents(run.id)
+      .filter((event) => event.type === "MODEL_CALL" || event.type === "TOOL_CALL");
+    expect(itemEvents[0]?.durationMs).toBeNull();
+    expect(itemEvents[0]?.durationSource).toBeNull();
+    expect(itemEvents[1]?.durationMs).toBe(250);
+    expect(itemEvents[1]?.durationSource).toBe("inter_item_delta");
+  });
+
+  it("excludes unrecognized items from the budget projection count", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: {
+            itemType: "future_thing",
+            rawType: "future_thing",
+            unrecognized: true,
+          },
+        });
+        return { output: "done", threadId: "t-unrecognized", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, {
+      AGENTGUARD_TOKEN_BUDGET: "500",
+      AGENTGUARD_BUDGET_STRICT_RATIO: "0",
+      AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE: "0",
+      AGENTGUARD_BUDGET_EST_TOOL_TOKENS: "1000",
+      AGENTGUARD_BUDGET_CHARS_PER_TOKEN: "1000000",
+    });
+    const agent = await service.createAgent({ name: "UnknownBudget" });
+    const { run } = await service.sendMessage(agent.id, "future tool");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(
+      service
+        .getEvents(run.id)
+        .some((event) => event.type === "BUDGET_PROJECTED_EXCEED"),
+    ).toBe(false);
   });
 
   it("does not report a budget-cancelled turn as successful when the runner resolves", async () => {

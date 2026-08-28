@@ -26,6 +26,7 @@ import {
   shouldAbortAfterAttempts,
   strategyRationaleFor,
 } from "./agentguard/policy.js";
+import { registerSecretValues } from "./agentguard/redact.js";
 import {
   abortIncident,
   completeRecoveryAttempt,
@@ -112,6 +113,7 @@ export class AgentService {
   ) {}
 
   async initialize(): Promise<void> {
+    registerSecretValues([this.config.arkApiKey, this.config.authToken]);
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {

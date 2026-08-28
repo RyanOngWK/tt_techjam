@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { redactError, redactMetadata, redactString } from "./redact.js";
+import {
+  redactError,
+  redactMetadata,
+  redactString,
+  registerSecretValues,
+} from "./redact.js";
 
 describe("redact", () => {
   it("redacts bearer tokens and sk- keys in strings", () => {
@@ -26,5 +31,20 @@ describe("redact", () => {
   it("redacts error messages", () => {
     expect(redactError("failed with Bearer tokensecret123")).toContain("[REDACTED]");
     expect(redactError(null)).toBeNull();
+  });
+
+  it("redacts registered values literally, longest-first, and idempotently", () => {
+    const shorter = "known-secret";
+    const longer = "known-secret-with+regex.*chars";
+    registerSecretValues([shorter, longer, longer]);
+
+    const once = redactString("value=" + longer);
+    expect(once).toBe("value=[REDACTED]");
+    expect(redactString(once)).toBe(once);
+  });
+
+  it("ignores registered values shorter than eight characters", () => {
+    registerSecretValues(["test", "", null, undefined]);
+    expect(redactString("test remains useful")).toBe("test remains useful");
   });
 });

@@ -131,12 +131,14 @@ function mapItemToStreamEvent(
 }
 
 export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
-  let event: Record<string, unknown>;
+  let root: unknown;
   try {
-    event = JSON.parse(line) as Record<string, unknown>;
+    root = JSON.parse(line);
   } catch {
     return;
   }
+  if (root === null || typeof root !== "object" || Array.isArray(root)) return;
+  const event = root as Record<string, unknown>;
 
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     parsed.threadId = event.thread_id;

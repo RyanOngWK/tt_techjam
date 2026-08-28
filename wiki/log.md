@@ -1,5 +1,14 @@
 # Wiki Log
 
+## [2026-08-28] update | Value-based trace redaction
+
+Registered configured Ark and application auth credential values during
+`AgentService.initialize`, before store initialization, so bare secret values
+in command/output span attributes are scrubbed by literal match before
+persistence. Pattern-based redaction remains for unknown credentials. Hardened
+Codex JSONL parsing to ignore non-object roots. Updated
+[agentguard.md](agentguard.md) and [index.md](index.md).
+
 ## [2026-08-28] ingest | Honest Codex leaf spans
 
 Codex item completion events now preserve type-specific, truncated attributes,

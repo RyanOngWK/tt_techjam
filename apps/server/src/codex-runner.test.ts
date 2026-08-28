@@ -83,9 +83,44 @@ describe("Codex runner protocol", () => {
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
     expect(parsed.streamEvents[0]?.type).toBe("MODEL_CALL");
   });
+
+  it("ignores JSONL lines whose root is not a non-null object", () => {
+    const parsed = emptyParsedEvents();
+    for (const line of ["null", JSON.stringify("text"), "42", "[]"]) {
+      expect(() => parseCodexEventLine(line, parsed)).not.toThrow();
+    }
+    expect(parsed).toEqual(emptyParsedEvents());
+  });
 });
 
 describe("codex item extraction", () => {
+  it("truncates command, output, and model previews to exactly 200 characters", () => {
+    const parsed = emptyParsedEvents();
+    const overLimit = "x".repeat(201);
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: overLimit,
+          aggregated_output: overLimit,
+        },
+      }),
+      parsed,
+    );
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: overLimit },
+      }),
+      parsed,
+    );
+
+    expect(String(parsed.streamEvents[0]?.metadata?.command)).toHaveLength(200);
+    expect(String(parsed.streamEvents[0]?.metadata?.outputPreview)).toHaveLength(200);
+    expect(String(parsed.streamEvents[1]?.metadata?.preview)).toHaveLength(200);
+  });
+
   it("marks a non-zero command exit as an error span", () => {
     const parsed = emptyParsedEvents();
     parseCodexEventLine(
@@ -120,6 +155,27 @@ describe("codex item extraction", () => {
     expect(parsed.streamEvents[0]?.status).toBe("ok");
   });
 
+  it.each([
+    ["missing", undefined],
+    ["non-numeric", "1"],
+  ])("treats a %s command exit code as unknown and ok", (_label, exitCode) => {
+    const parsed = emptyParsedEvents();
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: "pwd",
+          ...(exitCode === undefined ? {} : { exit_code: exitCode }),
+        },
+      }),
+      parsed,
+    );
+    expect(parsed.streamEvents[0]?.status).toBe("ok");
+    expect(parsed.streamEvents[0]?.metadata?.exitCode).toBeUndefined();
+    expect(parsed.streamEvents[0]?.error).toBeNull();
+  });
+
   it("extracts changed paths from a file change item", () => {
     const parsed = emptyParsedEvents();
     parseCodexEventLine(
@@ -131,6 +187,22 @@ describe("codex item extraction", () => {
     );
     expect(parsed.streamEvents[0]?.metadata?.paths).toEqual(["src/a.ts"]);
     expect(parsed.streamEvents[0]?.metadata?.count).toBe(1);
+  });
+
+  it("extracts the MCP server and tool names", () => {
+    const parsed = emptyParsedEvents();
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "mcp_tool_call", server: "github", tool: "create_issue" },
+      }),
+      parsed,
+    );
+    expect(parsed.streamEvents[0]?.metadata).toMatchObject({
+      itemType: "mcp_tool_call",
+      server: "github",
+      tool: "create_issue",
+    });
   });
 
   it("flags unrecognized item types instead of disguising them", () => {
