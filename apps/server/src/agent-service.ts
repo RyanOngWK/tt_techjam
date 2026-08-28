@@ -43,6 +43,12 @@ import {
   type PatchAgentGuardSettingsInput,
 } from "./agentguard/settings.js";
 import {
+  buildSpanTree,
+  summarizeRun,
+  type SpanFilter,
+  type SpanNode,
+} from "./agentguard/span-tree.js";
+import {
   appendTraceEvent,
   endSpan,
   eventsForRun,
@@ -282,6 +288,49 @@ export class AgentService {
   getEvents(runId: string): TraceEvent[] {
     this.getRun(runId);
     return eventsForRun(this.store, runId);
+  }
+
+  listRuns(): Array<{
+    id: string;
+    agentId: string;
+    agentName: string;
+    status: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    durationMs: number | null;
+    spanCount: number;
+    errorCount: number;
+    incidentCount: number;
+    tokensUsed: number;
+    tokenBudget: number;
+  }> {
+    const database = this.store.snapshot();
+    const agentNames = new Map(database.agents.map((agent) => [agent.id, agent.name]));
+    return database.runs
+      .slice()
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((run) => {
+        const events = database.events.filter((event) => event.runId === run.id);
+        const summary = summarizeRun(events);
+        return {
+          id: run.id,
+          agentId: run.agentId,
+          agentName: agentNames.get(run.agentId) ?? "(deleted)",
+          status: run.status,
+          startedAt: run.startedAt,
+          completedAt: run.completedAt,
+          durationMs: summary.durationMs,
+          spanCount: summary.spanCount,
+          errorCount: summary.errorCount,
+          incidentCount: database.incidents.filter((item) => item.runId === run.id).length,
+          tokensUsed: run.tokensUsed,
+          tokenBudget: run.tokenBudget,
+        };
+      });
+  }
+
+  getSpanTree(runId: string, filter?: SpanFilter): SpanNode[] {
+    return buildSpanTree(eventsForRun(this.store, runId), filter);
   }
 
   getIncidents(runId?: string): Incident[] {

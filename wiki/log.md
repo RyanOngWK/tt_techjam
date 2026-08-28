@@ -1,5 +1,12 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Run list and span query API
+
+`GET /api/runs` returns `{ runs }` newest-first with per-run summary counts.
+`GET /api/runs/:id/events` accepts `category`, `actor`, `status`, `since`, and
+`tree=true` while keeping `{ events }` and `format=json|download`. Updated
+[api-and-data.md](api-and-data.md) and [agentguard.md](agentguard.md).
+
 ## [2026-08-28] ingest | Real container-kill crash injection
 
 `injectFailure(..., "runtime_crash")` calls optional `AgentRunner.kill` when
