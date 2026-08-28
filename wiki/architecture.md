@@ -16,9 +16,9 @@ flowchart LR
 ## Control Plane
 
 The React client lists and configures agents, posts prompts, and polls a run
-until it finishes. The AgentGuard floating window has a **Trace** tab (flat
-timeline of the active run) and a **Runs** tab (global run list; selecting a
-row loads that run's trace). Web `TraceEvent`, `SpanNode`, and `RunListItem` types match
+until it finishes. The AgentGuard floating window has a **Trace** tab (nested span tree of the
+active run, with durations and actor badges, default expanded) and a **Runs**
+tab (global run list; selecting a row loads that run's trace). Web `TraceEvent`, `SpanNode`, and `RunListItem` types match
 the API contract. The client duplicates `buildSpanTree` (intentional, not a
 shared package) so filter chips can re-nest locally; `api.events` stays the
 live-trace fetch, while `api.listRuns` and `api.spanTree` wrap the run-list and

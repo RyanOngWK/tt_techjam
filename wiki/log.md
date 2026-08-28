@@ -1,5 +1,14 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Nested span tree in Trace tab
+
+The Trace tab timeline now renders a nested `SpanRow` tree (`buildSpanTree`
+with no filter yet) instead of a flat event list. Rows show indent,
+expand/collapse (default open), actor badges, durations, and
+`id="agentguard-failing-step"` on the first error span. Styles use existing
+light-theme tokens (`var(--red)`, `var(--muted)`, `#f8e4e4`, `#e3f2ea`).
+Updated [agentguard.md](agentguard.md) and [architecture.md](architecture.md).
+
 ## [2026-08-28] ingest | Drop stale AgentGuard refresh after run-list selection
 
 `refreshAgentGuard` now ignores in-flight results when `activeRunIdRef` no

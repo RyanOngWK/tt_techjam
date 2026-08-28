@@ -9,6 +9,7 @@ import {
   type WindowGeometry,
 } from "./agentguard-window";
 import { AgentGuardSettingsModal } from "./AgentGuardSettingsModal";
+import { buildSpanTree, formatDuration } from "./span-tree";
 import type {
   Agent,
   AgentRun,
@@ -18,6 +19,7 @@ import type {
   Message,
   RecoveryAttempt,
   RunListItem,
+  SpanNode,
   SystemInfo,
   TraceEvent,
 } from "./types";
@@ -61,6 +63,70 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+export function SpanRow({
+  node,
+  depth,
+  expanded,
+  onToggle,
+  failingEventId,
+}: {
+  node: SpanNode;
+  depth: number;
+  expanded: Set<string>;
+  onToggle: (id: string) => void;
+  failingEventId: string | null;
+}) {
+  const isOpen = expanded.has(node.id);
+  const hasChildren = node.children.length > 0;
+  const classes = [
+    "span-row",
+    node.matched ? "" : "is-scaffold",
+    node.status === "error" ? "is-error" : "",
+    node.id === failingEventId ? "is-failing" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <>
+      <li
+        className={classes}
+        style={{ paddingLeft: depth * 14 + 4 }}
+        id={node.id === failingEventId ? "agentguard-failing-step" : undefined}
+      >
+        <button
+          type="button"
+          className="span-toggle"
+          onClick={() => onToggle(node.id)}
+          disabled={!hasChildren}
+          aria-label={hasChildren ? (isOpen ? "Collapse" : "Expand") : "No children"}
+        >
+          {hasChildren ? (isOpen ? "▾" : "▸") : "·"}
+        </button>
+        <code className="span-type">{node.type}</code>
+        <span className={"span-actor is-" + node.actor}>{node.actor}</span>
+        <span className={"span-status is-" + node.status}>{node.status}</span>
+        <span className="span-duration">
+          {formatDuration(node.durationMs, node.durationSource)}
+        </span>
+        {node.error ? <em className="span-error">{node.error}</em> : null}
+      </li>
+      {isOpen
+        ? node.children.map((child) => (
+            <SpanRow
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              failingEventId={failingEventId}
+            />
+          ))
+        : null}
+    </>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -90,6 +156,7 @@ export default function App() {
   const [windowGeometry, setWindowGeometry] = useState<WindowGeometry>(() => loadGeometry());
   const [agentGuardTab, setAgentGuardTab] = useState<"trace" | "runs">("trace");
   const [runList, setRunList] = useState<RunListItem[]>([]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -508,11 +575,39 @@ export default function App() {
   };
 
   const failingEventId = useMemo(() => {
+    const firstError = traceEvents.find((event) => event.status === "error");
+    if (firstError) return firstError.id;
     const open = incidents.find(
       (item) => item.status === "open" || item.status === "awaiting_approval",
     );
     return open?.eventId ?? null;
-  }, [incidents]);
+  }, [traceEvents, incidents]);
+
+  const spanRoots = useMemo(
+    () => buildSpanTree(traceEvents, undefined),
+    [traceEvents],
+  );
+
+  const expanded = useMemo(() => {
+    const all = new Set<string>();
+    const walk = (nodes: SpanNode[]) => {
+      for (const node of nodes) {
+        if (!collapsed.has(node.id)) all.add(node.id);
+        walk(node.children);
+      }
+    };
+    walk(spanRoots);
+    return all;
+  }, [spanRoots, collapsed]);
+
+  const toggleSpan = (id: string) => {
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const latestDiagnosis = useMemo(
     () => diagnoses[0] ?? null,
@@ -1232,29 +1327,18 @@ export default function App() {
               <div className="agentguard-column">
                 <strong>Timeline</strong>
                 <ul className="trace-list">
-                  {traceEvents.length === 0 ? (
-                    <li className="muted">No events yet</li>
+                  {spanRoots.length === 0 ? (
+                    <li className="muted">No spans yet</li>
                   ) : (
-                    traceEvents.map((event) => (
-                      <li
-                        key={event.id}
-                        className={
-                          event.id === failingEventId ? "trace-failing" : undefined
-                        }
-                        id={
-                          event.id === failingEventId
-                            ? "agentguard-failing-step"
-                            : undefined
-                        }
-                      >
-                        <code>{event.type}</code>
-                        <span>
-                          {event.status}
-                          {event.id === failingEventId ? " · failing step" : ""}
-                          {event.parentEventId ? " · child" : ""}
-                        </span>
-                        {event.error ? <em>{event.error}</em> : null}
-                      </li>
+                    spanRoots.map((node) => (
+                      <SpanRow
+                        key={node.id}
+                        node={node}
+                        depth={0}
+                        expanded={expanded}
+                        onToggle={toggleSpan}
+                        failingEventId={failingEventId}
+                      />
                     ))
                   )}
                 </ul>

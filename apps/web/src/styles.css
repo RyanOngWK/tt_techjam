@@ -1608,3 +1608,76 @@ body.agentguard-dragging:not(.agentguard-resizing-nw):not(.agentguard-resizing-n
   color: var(--red);
 }
 
+.trace-list li.span-row {
+  display: grid;
+  grid-template-columns: 18px minmax(120px, 1.4fr) 70px 60px 60px 1fr;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.span-row.is-scaffold {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.span-row.is-error .span-status {
+  color: var(--red);
+}
+
+.span-row.is-failing {
+  background: #f8e4e4;
+  border-radius: 8px;
+  border-bottom-color: transparent;
+}
+
+.span-toggle {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.span-toggle:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+.span-actor {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  padding: 1px 4px;
+  text-align: center;
+}
+
+.span-actor.is-human {
+  background: #e8eef8;
+  color: #3d5a80;
+}
+
+.span-actor.is-agent {
+  background: #e3f2ea;
+  color: var(--green);
+}
+
+.span-actor.is-middleware {
+  background: #efe6d5;
+  color: #8a5a12;
+}
+
+.span-duration {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.span-error {
+  color: var(--red);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
