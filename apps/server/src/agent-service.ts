@@ -330,6 +330,7 @@ export class AgentService {
   }
 
   getSpanTree(runId: string, filter?: SpanFilter): SpanNode[] {
+    this.getRun(runId);
     return buildSpanTree(eventsForRun(this.store, runId), filter);
   }
 

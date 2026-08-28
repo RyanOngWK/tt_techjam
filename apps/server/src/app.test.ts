@@ -148,4 +148,21 @@ describe("trace query API", () => {
     const body = response.json() as { events: unknown[] };
     expect(body.events).toEqual([]);
   });
+
+  it("returns 404 for an unknown run on tree and flat event queries", async () => {
+    const { app } = await makeApp();
+    const missingId = crypto.randomUUID();
+
+    const tree = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + missingId + "/events?tree=true",
+    });
+    expect(tree.statusCode).toBe(404);
+
+    const flat = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + missingId + "/events",
+    });
+    expect(flat.statusCode).toBe(404);
+  });
 });

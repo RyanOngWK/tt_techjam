@@ -1,5 +1,11 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Span tree 404 for unknown runs
+
+`getSpanTree` now calls `getRun` first, so `GET /api/runs/:id/events?tree=true`
+returns 404 for a missing run, matching the flat events path. Updated
+[api-and-data.md](api-and-data.md) and [agentguard.md](agentguard.md).
+
 ## [2026-08-28] ingest | Run list and span query API
 
 `GET /api/runs` returns `{ runs }` newest-first with per-run summary counts.

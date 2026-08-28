@@ -14,8 +14,8 @@ validated with Zod.
 `agentName`. `GET /api/runs/:id/events` returns `{ events }` and accepts
 `category`, `actor`, `status`, `since`, and `tree=true` (nested span tree with
 `children` and `matched`); `format=json|download` still attaches a JSON file.
-Comma-separated filter values are allowed. Responses are envelope objects, not
-bare arrays.
+Unknown run IDs 404 for both the flat list and `tree=true`. Comma-separated
+filter values are allowed. Responses are envelope objects, not bare arrays.
 
 Source: [Fastify application](../apps/server/src/app.ts) | [AgentService](../apps/server/src/agent-service.ts) | [Span tree](../apps/server/src/agentguard/span-tree.ts)
 
