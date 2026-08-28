@@ -21,7 +21,10 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner): Promise<AgentService> {
+async function makeService(
+  runner: AgentRunner,
+  envOverrides: Record<string, string> = {},
+): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "agentguard-svc-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -31,6 +34,7 @@ async function makeService(runner: AgentRunner): Promise<AgentService> {
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...envOverrides,
   });
   const service = new AgentService(
     config,
@@ -482,15 +486,47 @@ describe("AgentGuard integration", () => {
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
 
     const events = service.getEvents(run.id);
+    const runStarted = events.find((event) => event.type === "RUN_STARTED");
     const turn = events.find((event) => event.type === "TURN");
     expect(turn).toBeDefined();
     expect(turn?.status).toBe("ok");
     expect(turn?.durationMs).toBeGreaterThanOrEqual(0);
     expect(turn?.durationSource).toBe("measured");
     expect(turn?.attemptIndex).toBe(0);
+    expect(turn?.parentEventId).toBe(runStarted?.id);
+    expect(events.some((event) => event.type === "MODEL_CALL")).toBe(false);
     expect(events.every((event) => event.metadata.synthesized === undefined)).toBe(true);
     expect(events.every((event) => event.category !== undefined)).toBe(true);
     expect(events.every((event) => event.actor !== undefined)).toBe(true);
+  });
+
+  it("does not report a budget-cancelled turn as successful when the runner resolves", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({
+          type: "MODEL_CALL",
+          status: "ok",
+          metadata: { note: "projected over budget" },
+        });
+        return { output: "late success", threadId: "thread-late", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, {
+      AGENTGUARD_TOKEN_BUDGET: "100",
+      AGENTGUARD_BUDGET_STRICT_RATIO: "0",
+      AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE: "0",
+    });
+    const agent = await service.createAgent({ name: "NonAbortingCancel" });
+    const { run } = await service.sendMessage(agent.id, "stay within budget");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getEvents(run.id);
+    expect(events.some((event) => event.type === "BUDGET_PROJECTED_EXCEED")).toBe(true);
+    const turn = events.find((event) => event.type === "TURN");
+    expect(turn?.status).toBe("error");
+    expect(turn?.error).toBe("Turn cancelled because projected token usage exceeded the budget");
   });
 });
 

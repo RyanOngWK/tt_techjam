@@ -589,13 +589,17 @@ export class AgentService {
 
         if (trace.turnSpanId) {
           await endSpan(this.store, trace.turnSpanId, {
-            status: "ok",
+            status: midTurnCancelIssued ? "error" : "ok",
+            error: midTurnCancelIssued
+              ? "Turn cancelled because projected token usage exceeded the budget"
+              : null,
             metadata: { usage: result.usage },
           });
           trace.turnSpanId = null;
-          await this.checkpointAfterSpan(agent.id, run.id, "after_turn");
-          agent = this.getAgent(agent.id);
         }
+        // Every completed turn gives recovery a post-turn resume point.
+        await this.checkpointAfterSpan(agent.id, run.id, "after_turn");
+        agent = this.getAgent(agent.id);
         if (pendingVerifyAttemptId) {
           await verifyRecovery(this.store, pendingVerifyAttemptId);
           pendingVerifyAttemptId = null;
