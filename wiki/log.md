@@ -1,5 +1,13 @@
 # Wiki Log
 
+## [2026-08-28] ingest | Honest Codex leaf spans
+
+Codex item completion events now preserve type-specific, truncated attributes,
+mark non-zero command exits as errors, identify unrecognized items, and label
+inter-item completion deltas as derived durations. Unrecognized items no longer
+inflate tool-call budget projections. Updated [agentguard.md](agentguard.md) and
+[index.md](index.md).
+
 ## [2026-08-28] ingest | Closed-loop failure span parenting
 
 AgentGuard traces now form one tree rooted at `RUN_STARTED`. Failure `ERROR`

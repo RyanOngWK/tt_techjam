@@ -19,7 +19,7 @@ operator approval for hard exceed / second crash.
 
 | Capability | Notes |
 | --- | --- |
-| Trace | Redacted, single-root span tree: each runner attempt is a measured `TURN` parent for emitted model/tool spans; failure `ERROR` nodes parent incident, diagnosis, and recovery activity, while verification parents to the successful recovery turn; quiet turns remain childless rather than fabricating telemetry; `GET /api/runs/:id/events?format=download` |
+| Trace | Redacted, single-root span tree: each runner attempt is a measured `TURN` parent for emitted model/tool spans; Codex command spans preserve truncated command/output attributes and report non-zero exits as errors, while child durations use the labeled inter-item completion delta; failure `ERROR` nodes parent incident, diagnosis, and recovery activity, while verification parents to the successful recovery turn; quiet turns remain childless rather than fabricating telemetry; `GET /api/runs/:id/events?format=download` |
 | Diagnose | Deterministic `DiagnosisRecord` per incident: root cause, evidence, confidence, failure signature + recurrence count, template suggestions; `GET /api/runs/:id/diagnoses` |
 | Detect | `runtime_crash`, `tool_timeout`, `budget_exceeded`, `budget_projected_exceeded`, … |
 | Recover | `retry`, `restart_resume`, `compress_resume` restore latest checkpoint; verdict updates the diagnosis (`acted` → `verified`/`aborted`/`awaiting_approval`) |

@@ -510,6 +510,7 @@ export class AgentService {
         let modelCalls = 0;
         let toolCalls = 0;
         let streamBytes = 0;
+        let lastObservedAt: number | null = null;
         let midTurnCancelIssued = false;
 
         trace.turnSpanId = await startSpan(this.store, {
@@ -530,12 +531,17 @@ export class AgentService {
           prompt: promptForRunner,
           threadId: agent.codexThreadId,
           onEvent: async (event) => {
+            const observedAt = event.observedAt ?? Date.now();
+            const deltaMs = lastObservedAt === null ? null : observedAt - lastObservedAt;
+            lastObservedAt = observedAt;
             await appendTraceEvent(this.store, {
               runId: run.id,
               type: event.type,
               status: event.status,
               parentEventId: trace.turnSpanId,
               attemptIndex: trace.attemptIndex,
+              durationMs: deltaMs,
+              durationSource: deltaMs === null ? null : "inter_item_delta",
               metadata: event.metadata ?? {},
               error: event.error ?? null,
             });
@@ -544,7 +550,9 @@ export class AgentService {
               event.status === "ok"
             ) {
               if (event.type === "MODEL_CALL") modelCalls += 1;
-              if (event.type === "TOOL_CALL") toolCalls += 1;
+              if (event.type === "TOOL_CALL" && event.metadata?.unrecognized !== true) {
+                toolCalls += 1;
+              }
               streamBytes += estimateEventBytes(event.metadata);
               await this.checkpointAfterSpan(
                 agent.id,

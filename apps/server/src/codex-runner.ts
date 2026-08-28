@@ -43,39 +43,91 @@ export function buildCodexArgs(
   return args;
 }
 
+const PREVIEW_LIMIT = 200;
+
+function preview(value: unknown): string | undefined {
+  return typeof value === "string" ? value.slice(0, PREVIEW_LIMIT) : undefined;
+}
+
 function mapItemToStreamEvent(
   item: Record<string, unknown>,
 ): RunnerStreamEvent | null {
   const itemType = typeof item.type === "string" ? item.type : "";
+  if (!itemType) return null;
+  const observedAt = Date.now();
+
   if (itemType === "agent_message" || itemType === "reasoning") {
+    const text = preview(item.text);
     return {
       type: "MODEL_CALL",
       status: "ok",
-      metadata: { itemType, ...(typeof item.text === "string" ? { preview: item.text.slice(0, 200) } : {}) },
+      observedAt,
+      metadata: { itemType, ...(text ? { preview: text } : {}) },
     };
   }
-  if (
-    itemType === "command_execution" ||
-    itemType === "file_change" ||
-    itemType === "mcp_tool_call" ||
-    itemType.includes("tool") ||
-    itemType.includes("command") ||
-    itemType.includes("file")
-  ) {
+
+  if (itemType === "command_execution") {
+    const exitCode = typeof item.exit_code === "number" ? item.exit_code : null;
+    const failed = exitCode !== null && exitCode !== 0;
+    const command = preview(item.command);
+    const output = preview(item.aggregated_output);
+    return {
+      type: "TOOL_CALL",
+      status: failed ? "error" : "ok",
+      observedAt,
+      metadata: {
+        itemType,
+        ...(command ? { command } : {}),
+        ...(exitCode !== null ? { exitCode } : {}),
+        ...(output ? { outputPreview: output } : {}),
+      },
+      error: failed ? "Command exited with code " + exitCode : null,
+    };
+  }
+
+  if (itemType === "file_change") {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const paths = changes
+      .map((change) =>
+        typeof (change as Record<string, unknown>)?.path === "string"
+          ? String((change as Record<string, unknown>).path)
+          : null,
+      )
+      .filter((value): value is string => value !== null);
+    const changeKinds = changes
+      .map((change) =>
+        typeof (change as Record<string, unknown>)?.kind === "string"
+          ? String((change as Record<string, unknown>).kind)
+          : null,
+      )
+      .filter((value): value is string => value !== null);
     return {
       type: "TOOL_CALL",
       status: "ok",
-      metadata: { itemType },
+      observedAt,
+      metadata: { itemType, paths, changeKinds, count: paths.length },
     };
   }
-  if (itemType) {
+
+  if (itemType === "mcp_tool_call") {
     return {
       type: "TOOL_CALL",
       status: "ok",
-      metadata: { itemType },
+      observedAt,
+      metadata: {
+        itemType,
+        ...(typeof item.server === "string" ? { server: item.server } : {}),
+        ...(typeof item.tool === "string" ? { tool: item.tool } : {}),
+      },
     };
   }
-  return null;
+
+  return {
+    type: "TOOL_CALL",
+    status: "ok",
+    observedAt,
+    metadata: { itemType, rawType: itemType, unrecognized: true },
+  };
 }
 
 export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
