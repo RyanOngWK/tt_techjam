@@ -32,7 +32,12 @@ production. [Web client](../apps/web/src/App.tsx) | [Web types](../apps/web/src/
 collector, tree builder, detect, recover, proactive budget, HITL). It accepts
 one active run per agent, writes metadata through `JsonStore`, delegates
 workspace lifecycle to `WorkspaceManager`, and delegates execution to an
-`AgentRunner` implementation. The one-page diagram is
+`AgentRunner` implementation. Each workspace is seeded with a
+platform-generated `AGENTS.md` that now embeds an **LLM Wiki** section: when a
+conversation task is deemed large (multi-component, multi-turn), the created
+agent scaffolds and maintains `wiki/` to manage the code, and can delegate
+wiki upkeep to a `wikier` custom agent defined under
+`.codex/agents/wikier.toml`. The one-page diagram is
 [docs/agentguard-architecture.md](../docs/agentguard-architecture.md)
 ([PNG](../docs/assets/agentguard-architecture.png)).
 [Service](../apps/server/src/agent-service.ts) | [Runner factory](../apps/server/src/runner-factory.ts) | [AgentGuard wiki](agentguard.md) | [Architecture one-pager](../docs/agentguard-architecture.md)

@@ -40,6 +40,37 @@ Volcengine ECS.
 
 **Track: Glass Box — trace and audit.**
 
+### What we've built
+
+AgentGuard is implemented end to end across the control plane, Runtime, data,
+and UI, exactly along the brief's "Trace, Audit, and Observability" middleware
+direction:
+
+- **Span tree, not a log stream** — every `TraceEvent` is a span with `category`,
+  `actor`, `parentEventId`, `attemptIndex`, and a duration that records its
+  measurement source. `runId` is the trace id; `eventId` is the span id. No
+  synthetic telemetry: per-turn coverage comes from the measured `TURN` span.
+- **Redaction before persistence** — configured Ark / API-auth credential values
+  are registered before store init and scrubbed by literal value on top of
+  pattern matching; previews redact before truncation. Asserted by
+  `redaction-evidence.test.ts`.
+- **Real runner instrumentation** — Codex JSONL items become model/tool spans
+  with real exit codes; non-zero command exits turn spans red organically.
+- **Queryable trace API** — `GET /api/runs` (newest-first, per-run summaries)
+  and `GET /api/runs/:id/events` with category / actor / status / since filters,
+  `tree=true`, and JSON evidence export; unknown runs return 404.
+- **Trace UI** — run list tab, nested span tree with actor badges and qualified
+  durations, expandable span detail, filter chips that preserve hierarchy, and
+  one-click jump to the failing step.
+- **Closed-loop recovery** — failure detection, deterministic diagnosis,
+  checkpointed retry / restart-resume, and `RECOVERY_VERIFIED` all nest as
+  children of the failing span; `runtime_crash` performs a real container kill
+  so the error span carries a genuine exit code.
+- **Proactive budget control** — tiered pre-turn prompt wrap/gate, mid-turn
+  projection cancel driven by accumulated span data, deterministic
+  compress-on-recovery (soft automatic, hard HITL), and persisted global
+  policy settings (`GET/PATCH /api/agentguard/settings`).
+
 ### Problem
 
 A Run is a tree of model calls, tool calls, and policy decisions, but the platform stored it as a flat list. Failing steps were unlocatable, retries unattributable, and observability sat beside recovery instead of driving it.
@@ -60,18 +91,6 @@ Every span carries a **category**, **actor**, **parent**, **attempt index**, and
 Architecture: [docs/agentguard-architecture.md](docs/agentguard-architecture.md)
 
 ![AgentGuard span collector, consumers, and trust boundary](docs/assets/agentguard-architecture.png)
-
-### Demo steps
-
-1. Create or select an Agent; show it ready.
-2. Run a real Playground task (create a project, install deps, run tests).
-3. Open the span tree: measured `TURN` spans, nested model/tool spans with commands and exit codes, checkpoints, per-turn usage. Expand a tool span; filter by category and errors-only.
-4. Kill the runtime container mid-run. Codex exits non-zero and the tool span turns red — no synthetic event.
-5. `INCIDENT_OPENED` and `DIAGNOSIS_ISSUED` appear as children of the failing span.
-6. `RECOVERY_STARTED` → `CHECKPOINT_RESTORED` nest under the same span; the next `TURN` contains `RECOVERY_VERIFIED`. Point out `attemptIndex`.
-7. Show the budget meter and a mid-turn `BUDGET_PROJECTED_EXCEED` from accumulated spans, or inject `budget_exceeded` → Approve / Abort attributed to actor `human`.
-8. Open the run list across agents; export JSON and confirm no secrets.
-9. Send a follow-up message that continues the session and workspace.
 
 ### Tests
 

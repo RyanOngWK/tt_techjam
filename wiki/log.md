@@ -1,5 +1,18 @@
 # Wiki Log
 
+## [2026-08-30] ingest | LLM Wiki capability for created agents
+
+Created agents now ship with an LLM-wiki workflow. `WorkspaceManager` embeds an
+`## LLM Wiki` section in the platform-generated `AGENTS.md` instructing the
+agent to scaffold and maintain `wiki/` when a conversation task is deemed large
+(building a whole app, a multi-component feature, or work spanning many turns),
+and to delegate heavier wiki upkeep to a `@wikier` custom agent. It also writes
+`.codex/agents/wikier.toml` (Codex custom-agent schema: `name`,
+`description`, `developer_instructions`) defining `wikier` for scaffold,
+ingest, query, and lint operations. Added `workspace.test.ts` covering the
+generated instructions and agent file. Server: 125 tests passing.
+[Architecture](architecture.md) updated. Sources: [Workspace manager](../apps/server/src/workspace.ts) | [Workspace tests](../apps/server/src/workspace.test.ts).
+
 ## [2026-08-28] update | De-flaked AgentGuard tests and closed API coverage gaps
 
 Fixed two flaky test races that intermittently broke `npm run check` under full
