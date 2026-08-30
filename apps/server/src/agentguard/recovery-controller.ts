@@ -19,6 +19,8 @@ export async function openIncident(
     eventId: string;
     failureType: FailureType;
     severity: Severity;
+    parentEventId?: string | null;
+    attemptIndex?: number;
   },
 ): Promise<Incident> {
   const incident: Incident = {
@@ -38,6 +40,8 @@ export async function openIncident(
     runId: input.runId,
     type: "INCIDENT_OPENED",
     status: "error",
+    parentEventId: input.parentEventId ?? null,
+    attemptIndex: input.attemptIndex ?? 0,
     metadata: {
       incidentId: incident.id,
       failureType: incident.failureType,
@@ -52,6 +56,8 @@ export async function startRecoveryAttempt(
     incident: Incident;
     strategy: RecoveryStrategy;
     metadata?: Record<string, unknown>;
+    parentEventId?: string | null;
+    attemptIndex?: number;
   },
 ): Promise<RecoveryAttempt> {
   const attempt: RecoveryAttempt = {
@@ -78,6 +84,8 @@ export async function startRecoveryAttempt(
     runId: input.incident.runId,
     type: "RECOVERY_STARTED",
     status: "running",
+    parentEventId: input.parentEventId ?? null,
+    attemptIndex: input.attemptIndex ?? 0,
     metadata: {
       attemptId: attempt.id,
       strategy: attempt.strategy,
@@ -94,6 +102,10 @@ export async function completeRecoveryAttempt(
   attemptId: string,
   outcome: "succeeded" | "failed",
   error?: string | null,
+  trace?: {
+    parentEventId?: string | null;
+    attemptIndex?: number;
+  },
 ): Promise<RecoveryAttempt | null> {
   const completedAt = now();
   const attempt = await store.mutate((database) => {
@@ -109,6 +121,8 @@ export async function completeRecoveryAttempt(
     runId: attempt.runId,
     type: outcome === "succeeded" ? "RECOVERY_COMPLETED" : "RECOVERY_FAILED",
     status: outcome === "succeeded" ? "ok" : "error",
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: { attemptId, strategy: attempt.strategy },
     error: error ?? null,
   });
@@ -118,6 +132,10 @@ export async function completeRecoveryAttempt(
 export async function verifyRecovery(
   store: JsonStore,
   attemptId: string,
+  trace?: {
+    parentEventId?: string | null;
+    attemptIndex?: number;
+  },
 ): Promise<void> {
   const attempt = await store.mutate((database) => {
     const stored = database.recoveryAttempts.find((item) => item.id === attemptId);
@@ -136,18 +154,24 @@ export async function verifyRecovery(
     runId: attempt.runId,
     type: "RECOVERY_VERIFIED",
     status: "ok",
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: {
       attemptId: attempt.id,
       incidentId: attempt.incidentId,
     },
   });
-  await updateDiagnosis(store, attempt.incidentId, { status: "verified" });
+  await updateDiagnosis(store, attempt.incidentId, { status: "verified" }, trace);
 }
 
 export async function abortIncident(
   store: JsonStore,
   incidentId: string,
   reason: string,
+  trace?: {
+    parentEventId?: string | null;
+    attemptIndex?: number;
+  },
 ): Promise<void> {
   const incident = await store.mutate((database) => {
     const stored = database.incidents.find((item) => item.id === incidentId);
@@ -168,16 +192,22 @@ export async function abortIncident(
     runId: incident.runId,
     type: "ALERT",
     status: "error",
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: { incidentId, reason },
     error: reason,
   });
-  await updateDiagnosis(store, incidentId, { status: "aborted" });
+  await updateDiagnosis(store, incidentId, { status: "aborted" }, trace);
 }
 
 export async function requestApproval(
   store: JsonStore,
   incident: Incident,
   reason: string,
+  trace?: {
+    parentEventId?: string | null;
+    attemptIndex?: number;
+  },
 ): Promise<void> {
   await store.mutate((database) => {
     const stored = database.incidents.find((item) => item.id === incident.id);
@@ -192,6 +222,8 @@ export async function requestApproval(
     runId: incident.runId,
     type: "APPROVAL_REQUESTED",
     status: "running",
+    parentEventId: trace?.parentEventId ?? null,
+    attemptIndex: trace?.attemptIndex ?? 0,
     metadata: {
       incidentId: incident.id,
       failureType: incident.failureType,
@@ -199,5 +231,10 @@ export async function requestApproval(
     },
     error: reason,
   });
-  await updateDiagnosis(store, incident.id, { status: "awaiting_approval" });
+  await updateDiagnosis(
+    store,
+    incident.id,
+    { status: "awaiting_approval" },
+    trace,
+  );
 }

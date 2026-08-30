@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import {
   clampRect,
@@ -9,7 +9,9 @@ import {
   type WindowGeometry,
 } from "./agentguard-window";
 import { AgentGuardSettingsModal } from "./AgentGuardSettingsModal";
+import { buildSpanTree, formatDuration } from "./span-tree";
 import type {
+  ActorType,
   Agent,
   AgentRun,
   AgentGuardSettingsEffective,
@@ -17,6 +19,10 @@ import type {
   Incident,
   Message,
   RecoveryAttempt,
+  RunListItem,
+  SpanCategory,
+  SpanFilter,
+  SpanNode,
   SystemInfo,
   TraceEvent,
 } from "./types";
@@ -60,6 +66,113 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+export function buildActiveFilter(
+  errorsOnly: boolean,
+  categoryFilter: SpanCategory | null,
+  actorFilter: ActorType | null,
+): SpanFilter | undefined {
+  if (!errorsOnly && !categoryFilter && !actorFilter) return undefined;
+  return {
+    ...(errorsOnly ? { status: ["error" as const] } : {}),
+    ...(categoryFilter ? { category: [categoryFilter] } : {}),
+    ...(actorFilter ? { actor: [actorFilter] } : {}),
+  };
+}
+
+export function SpanRow({
+  node,
+  depth,
+  expanded,
+  onToggle,
+  failingEventId,
+  selected,
+  onSelect,
+}: {
+  node: SpanNode;
+  depth: number;
+  expanded: Set<string>;
+  onToggle: (id: string) => void;
+  failingEventId: string | null;
+  selected: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const isOpen = expanded.has(node.id);
+  const hasChildren = node.children.length > 0;
+  const classes = [
+    "span-row",
+    node.matched ? "" : "is-scaffold",
+    node.status === "error" ? "is-error" : "",
+    node.id === failingEventId ? "is-failing" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <>
+      <li
+        className={classes}
+        style={{ paddingLeft: depth * 14 + 4 }}
+        id={node.id === failingEventId ? "agentguard-failing-step" : undefined}
+      >
+        <button
+          type="button"
+          className="span-toggle"
+          onClick={() => onToggle(node.id)}
+          disabled={!hasChildren}
+          aria-label={hasChildren ? (isOpen ? "Collapse" : "Expand") : "No children"}
+        >
+          {hasChildren ? (isOpen ? "▾" : "▸") : "·"}
+        </button>
+        <button
+          type="button"
+          className="span-type"
+          onClick={() => onSelect(node.id)}
+        >
+          {node.type}
+        </button>
+        <span className={"span-actor is-" + node.actor}>{node.actor}</span>
+        <span className={"span-status is-" + node.status}>{node.status}</span>
+        <span className="span-duration">
+          {formatDuration(node.durationMs, node.durationSource)}
+        </span>
+        {node.error ? <em className="span-error">{node.error}</em> : null}
+      </li>
+      {selected === node.id ? (
+        <li className="span-detail" style={{ paddingLeft: depth * 14 + 22 }}>
+          <dl>
+            <dt>category</dt>
+            <dd>{node.category}</dd>
+            <dt>attempt</dt>
+            <dd>{node.attemptIndex}</dd>
+            <dt>started</dt>
+            <dd>{node.timestamp}</dd>
+            {Object.entries(node.metadata).map(([key, value]) => (
+              <Fragment key={key}>
+                <dt>{key}</dt>
+                <dd>{typeof value === "string" ? value : JSON.stringify(value)}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </li>
+      ) : null}
+      {isOpen
+        ? node.children.map((child) => (
+            <SpanRow
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              failingEventId={failingEventId}
+              selected={selected}
+              onSelect={onSelect}
+            />
+          ))
+        : null}
+    </>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -87,10 +200,19 @@ export default function App() {
     null,
   );
   const [windowGeometry, setWindowGeometry] = useState<WindowGeometry>(() => loadGeometry());
+  const [agentGuardTab, setAgentGuardTab] = useState<"trace" | "runs">("trace");
+  const [runList, setRunList] = useState<RunListItem[]>([]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<SpanCategory | null>(null);
+  const [actorFilter, setActorFilter] = useState<ActorType | null>(null);
+  const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const pendingRunSelectionRef = useRef<string | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
   const dragSession = useRef<
     | {
         mode: "move";
@@ -108,6 +230,7 @@ export default function App() {
     | null
   >(null);
   selectedIdRef.current = selectedId;
+  activeRunIdRef.current = activeRun?.id ?? null;
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -158,6 +281,18 @@ export default function App() {
   }, [bootstrap]);
 
   useEffect(() => {
+    const preservedRunId = pendingRunSelectionRef.current;
+    if (preservedRunId) {
+      pendingRunSelectionRef.current = null;
+      if (!selectedId) {
+        setMessages([]);
+        return;
+      }
+      void refreshMessages(selectedId).catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      );
+      return;
+    }
     setActiveRun(null);
     setTraceEvents([]);
     setIncidents([]);
@@ -202,6 +337,20 @@ export default function App() {
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
+
+  useEffect(() => {
+    if (agentGuardTab !== "runs") return;
+    let cancelled = false;
+    void api
+      .listRuns()
+      .then((result) => {
+        if (!cancelled) setRunList(result.runs);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [agentGuardTab]);
 
   useEffect(() => {
     if (!activeRun || !isActiveRunStatus(activeRun.status)) return;
@@ -393,7 +542,7 @@ export default function App() {
         api.recoveries(runId),
         api.diagnoses(runId),
       ]);
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || activeRunIdRef.current !== runId) return;
     setTraceEvents(eventsResult.events);
     setIncidents(incidentsResult.incidents);
     setRecoveries(recoveriesResult.recoveries);
@@ -408,8 +557,10 @@ export default function App() {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
         const result = await api.run(runId);
-        if (selectedIdRef.current === agentId) setActiveRun(result.run);
-        await refreshAgentGuard(runId).catch(() => undefined);
+        if (activeRunIdRef.current === runId) {
+          if (selectedIdRef.current === agentId) setActiveRun(result.run);
+          await refreshAgentGuard(runId).catch(() => undefined);
+        }
         if (!["queued", "running", "recovering", "awaiting_approval"].includes(result.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
@@ -418,6 +569,29 @@ export default function App() {
     } finally {
       pollingRunIds.current.delete(runId);
     }
+  };
+
+  const openRunFromList = (item: RunListItem) => {
+    void api
+      .run(item.id)
+      .then((result) => {
+        if (!mountedRef.current) return;
+        if (selectedId !== item.agentId) {
+          pendingRunSelectionRef.current = item.id;
+          selectedIdRef.current = item.agentId;
+          setSelectedId(item.agentId);
+        }
+        setActiveRun(result.run);
+        activeRunIdRef.current = result.run.id;
+        void refreshAgentGuard(item.id).catch(() => undefined);
+        if (isActiveRunStatus(result.run.status)) {
+          void pollRun(item.id, item.agentId);
+        }
+        setAgentGuardTab("trace");
+      })
+      .catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      );
   };
 
   const injectFailure = async (
@@ -451,11 +625,44 @@ export default function App() {
   };
 
   const failingEventId = useMemo(() => {
+    const firstError = traceEvents.find((event) => event.status === "error");
+    if (firstError) return firstError.id;
     const open = incidents.find(
       (item) => item.status === "open" || item.status === "awaiting_approval",
     );
     return open?.eventId ?? null;
-  }, [incidents]);
+  }, [traceEvents, incidents]);
+
+  const activeFilter = useMemo(
+    () => buildActiveFilter(errorsOnly, categoryFilter, actorFilter),
+    [errorsOnly, categoryFilter, actorFilter],
+  );
+
+  const spanRoots = useMemo(
+    () => buildSpanTree(traceEvents, activeFilter),
+    [traceEvents, activeFilter],
+  );
+
+  const expanded = useMemo(() => {
+    const all = new Set<string>();
+    const walk = (nodes: SpanNode[]) => {
+      for (const node of nodes) {
+        if (!collapsed.has(node.id)) all.add(node.id);
+        walk(node.children);
+      }
+    };
+    walk(spanRoots);
+    return all;
+  }, [spanRoots, collapsed]);
+
+  const toggleSpan = (id: string) => {
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const latestDiagnosis = useMemo(
     () => diagnoses[0] ?? null,
@@ -1071,6 +1278,28 @@ export default function App() {
             </div>
           ) : null}
           <div className="agentguard-body">
+            <div className="agentguard-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={agentGuardTab === "trace"}
+                className={agentGuardTab === "trace" ? "agentguard-tab is-active" : "agentguard-tab"}
+                onClick={() => setAgentGuardTab("trace")}
+              >
+                Trace
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={agentGuardTab === "runs"}
+                className={agentGuardTab === "runs" ? "agentguard-tab is-active" : "agentguard-tab"}
+                onClick={() => setAgentGuardTab("runs")}
+              >
+                Runs
+              </button>
+            </div>
+            {agentGuardTab === "trace" ? (
+              <>
             {latestDiagnosis ? (
               <div className="diagnosis-card">
                 <div className="diagnosis-card-head">
@@ -1152,30 +1381,54 @@ export default function App() {
             <div className="agentguard-columns">
               <div className="agentguard-column">
                 <strong>Timeline</strong>
-                <ul className="trace-list">
-                  {traceEvents.length === 0 ? (
-                    <li className="muted">No events yet</li>
-                  ) : (
-                    traceEvents.map((event) => (
-                      <li
-                        key={event.id}
-                        className={
-                          event.id === failingEventId ? "trace-failing" : undefined
-                        }
-                        id={
-                          event.id === failingEventId
-                            ? "agentguard-failing-step"
-                            : undefined
+                <div className="span-filters">
+                  <button
+                    type="button"
+                    className={errorsOnly ? "span-chip is-active" : "span-chip"}
+                    onClick={() => setErrorsOnly((value) => !value)}
+                  >
+                    Errors only
+                  </button>
+                  {(["model_call", "tool_call", "policy_decision", "recovery"] as const).map(
+                    (category) => (
+                      <button
+                        key={category}
+                        type="button"
+                        className={categoryFilter === category ? "span-chip is-active" : "span-chip"}
+                        onClick={() =>
+                          setCategoryFilter((value) => (value === category ? null : category))
                         }
                       >
-                        <code>{event.type}</code>
-                        <span>
-                          {event.status}
-                          {event.id === failingEventId ? " · failing step" : ""}
-                          {event.parentEventId ? " · child" : ""}
-                        </span>
-                        {event.error ? <em>{event.error}</em> : null}
-                      </li>
+                        {category.replace("_", " ")}
+                      </button>
+                    ),
+                  )}
+                  {(["human", "agent", "middleware"] as const).map((actor) => (
+                    <button
+                      key={actor}
+                      type="button"
+                      className={actorFilter === actor ? "span-chip is-active" : "span-chip"}
+                      onClick={() => setActorFilter((value) => (value === actor ? null : actor))}
+                    >
+                      {actor}
+                    </button>
+                  ))}
+                </div>
+                <ul className="trace-list">
+                  {spanRoots.length === 0 ? (
+                    <li className="muted">No spans yet</li>
+                  ) : (
+                    spanRoots.map((node) => (
+                      <SpanRow
+                        key={node.id}
+                        node={node}
+                        depth={0}
+                        expanded={expanded}
+                        onToggle={toggleSpan}
+                        failingEventId={failingEventId}
+                        selected={selectedSpanId}
+                        onSelect={setSelectedSpanId}
+                      />
                     ))
                   )}
                 </ul>
@@ -1222,6 +1475,32 @@ export default function App() {
                 </ul>
               </div>
             </div>
+              </>
+            ) : (
+              <ul className="run-list">
+                {runList.length === 0 ? (
+                  <li className="muted">No runs yet</li>
+                ) : (
+                  runList.map((item) => (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        className="run-list-row"
+                        onClick={() => openRunFromList(item)}
+                      >
+                        <span className="run-list-agent">{item.agentName}</span>
+                        <span className={"run-list-status is-" + item.status}>{item.status}</span>
+                        <span className="run-list-metric">{item.spanCount} spans</span>
+                        <span className="run-list-metric">{item.errorCount} errors</span>
+                        <span className="run-list-metric">
+                          {item.tokensUsed}/{item.tokenBudget}
+                        </span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
           </div>
           <div
             className="agentguard-resize-handle agentguard-resize-nw"

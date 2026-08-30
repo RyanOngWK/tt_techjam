@@ -3,13 +3,27 @@
 ## HTTP Surface
 
 The API exposes health and authentication discovery, system information, agent
-CRUD and lifecycle actions, messages, agent-scoped run history, individual
-run lookup, and AgentGuard evidence: trace events, incidents, recovery
-attempts, and automated diagnoses. Message submission returns `202 Accepted`
-because execution is asynchronous. Request payloads and path IDs are validated
-with Zod.
+CRUD and lifecycle actions, messages, agent-scoped run history, a global run
+list, individual run lookup, and AgentGuard evidence: trace events, incidents,
+recovery attempts, and automated diagnoses. Message submission returns `202
+Accepted` because execution is asynchronous. Request payloads and path IDs are
+validated with Zod.
 
-Source: [Fastify application](../apps/server/src/app.ts)
+`GET /api/runs` returns `{ runs }` newest-first, each with `spanCount`,
+`errorCount`, `incidentCount`, `durationMs`, `tokensUsed`, `tokenBudget`, and
+`agentName`. `GET /api/runs/:id/events` returns `{ events }` and accepts
+`category`, `actor`, `status`, `since`, and `tree=true` (nested span tree with
+`children` and `matched`); `format=json|download` still attaches a JSON file.
+Unknown run IDs 404 for both the flat list and `tree=true`. Comma-separated
+filter values are allowed. Responses are envelope objects, not bare arrays.
+
+The web client mirrors those shapes as `SpanCategory`, `ActorType`,
+`DurationSource`, `TraceEvent`, `SpanNode`, and `RunListItem`. `api.listRuns`
+calls `GET /api/runs`; `api.spanTree` calls `GET /api/runs/:id/events?tree=true`.
+The trace view still uses the flat `api.events` path and rebuilds the tree in
+the browser.
+
+Source: [Fastify application](../apps/server/src/app.ts) | [AgentService](../apps/server/src/agent-service.ts) | [Span tree](../apps/server/src/agentguard/span-tree.ts) | [Web types](../apps/web/src/types.ts) | [Web API client](../apps/web/src/api.ts) | [Web span tree](../apps/web/src/span-tree.ts)
 
 ## Lifecycle
 

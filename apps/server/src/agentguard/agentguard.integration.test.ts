@@ -2,26 +2,27 @@ import { writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { removeTemporaryDirectories } from "../test/settle.js";
 import { AgentService } from "../agent-service.js";
 import { loadConfig } from "../config.js";
+import { parseCodexEventLine, type ParsedEvents } from "../codex-runner.js";
 import { RunCancelledError } from "../errors.js";
 import { JsonStore } from "../store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "../types.js";
 import { WorkspaceManager } from "../workspace.js";
+import { buildSpanTree } from "./span-tree.js";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  const { rm } = await import("node:fs/promises");
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
-  );
+  await removeTemporaryDirectories(temporaryDirectories);
 });
 
-async function makeService(runner: AgentRunner): Promise<AgentService> {
+async function makeService(
+  runner: AgentRunner,
+  envOverrides: Record<string, string> = {},
+): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "agentguard-svc-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -31,6 +32,7 @@ async function makeService(runner: AgentRunner): Promise<AgentService> {
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...envOverrides,
   });
   const service = new AgentService(
     config,
@@ -139,7 +141,11 @@ describe("AgentGuard integration", () => {
     await expect
       .poll(() => service.getRun(run.id).status, { timeout: 10_000 })
       .toBe("failed");
-    expect(service.getEvents(run.id).some((event) => event.type === "ALERT")).toBe(true);
+    await expect
+      .poll(() =>
+        service.getEvents(run.id).some((event) => event.type === "ALERT"),
+      )
+      .toBe(true);
     expect(service.getIncidents(run.id).some((item) => item.status === "aborted")).toBe(
       true,
     );
@@ -277,6 +283,29 @@ describe("AgentGuard integration", () => {
     await expect.poll(() => service.getDiagnoses(run.id)[0]?.status).toBe("verified");
   });
 
+  it("warns which config field is too short to redact without echoing its value", async () => {
+    const runner: AgentRunner = {
+      async run(): Promise<RunnerResult> {
+        return { output: "done", threadId: "t-warn", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const warnings: string[] = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((...args) => {
+      warnings.push(args.map((arg) => String(arg)).join(" "));
+    });
+    try {
+      await makeService(runner, { APP_AUTH_TOKEN: "zqx9j" });
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const text = warnings.join("\n");
+    expect(text).toContain("authToken");
+    expect(text).not.toContain("zqx");
+  });
+
   it("redacts secrets from stored events", async () => {
     const runner: AgentRunner = {
       async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -288,6 +317,15 @@ describe("AgentGuard integration", () => {
             note: "Bearer tokensecretvalue",
           },
         });
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: {
+            itemType: "command_execution",
+            command: "printenv",
+            outputPreview: "Bearer tokensecretvalue",
+          },
+        });
         return { output: "done", threadId: "t1", usage: null };
       },
       cancel: async () => false,
@@ -297,12 +335,114 @@ describe("AgentGuard integration", () => {
     const agent = await service.createAgent({ name: "Redact" });
     const { run } = await service.sendMessage(agent.id, "secret");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
-    const modelEvent = service
-      .getEvents(run.id)
-      .find((event) => event.type === "MODEL_CALL" && event.metadata.ARK_API_KEY);
+    const events = service.getEvents(run.id);
+    const modelEvent = events.find(
+      (event) => event.type === "MODEL_CALL" && event.metadata.ARK_API_KEY,
+    );
     expect(modelEvent?.metadata.ARK_API_KEY).toBe("[REDACTED]");
     expect(JSON.stringify(modelEvent?.metadata)).not.toContain("super-secret");
     expect(JSON.stringify(modelEvent?.metadata)).not.toContain("tokensecretvalue");
+
+    const commandEvent = events.find(
+      (event) => event.metadata.itemType === "command_execution",
+    );
+    expect(commandEvent).toBeDefined();
+    expect(String(commandEvent?.metadata.outputPreview)).toContain("[REDACTED]");
+  });
+
+  it("redacts a bare configured Ark API key from command output before persistence", async () => {
+    const secret = "ark_live_A8+meta.chars/2026_secret";
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        const parsed: ParsedEvents = {
+          messages: [],
+          threadId: null,
+          usage: null,
+          errors: [],
+          streamEvents: [],
+        };
+        parseCodexEventLine(
+          JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command: "printenv ARK_API_KEY",
+              aggregated_output: secret,
+              exit_code: 0,
+            },
+          }),
+          parsed,
+        );
+        for (const event of parsed.streamEvents) {
+          await request.onEvent?.(event);
+        }
+        return { output: "done", threadId: "t-secret", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, { ARK_API_KEY: secret });
+    const agent = await service.createAgent({ name: "BareSecret" });
+    const { run } = await service.sendMessage(agent.id, "show environment");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const serializedEvents = JSON.stringify(service.getEvents(run.id));
+    expect(serializedEvents).not.toContain(secret);
+    expect(serializedEvents).toContain("[REDACTED]");
+  });
+
+  it("leaves no recoverable fragment of a secret that straddles the preview boundary", async () => {
+    const secret = "boundaryLeakCanary_0123456789_abcdefghijk";
+    // Truncating first would keep exactly the first 30 characters of the secret,
+    // which literal value matching can no longer recognize afterwards.
+    const fragment = secret.slice(0, 30);
+    const output = "o".repeat(170) + secret;
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        const parsed: ParsedEvents = {
+          messages: [],
+          threadId: null,
+          usage: null,
+          errors: [],
+          streamEvents: [],
+        };
+        parseCodexEventLine(
+          JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command: "printenv ARK_API_KEY",
+              aggregated_output: output,
+              exit_code: 0,
+            },
+          }),
+          parsed,
+        );
+        for (const event of parsed.streamEvents) {
+          await request.onEvent?.(event);
+        }
+        return { output: "done", threadId: "t-boundary", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, { ARK_API_KEY: secret });
+    const agent = await service.createAgent({ name: "BoundarySecret" });
+    const { run } = await service.sendMessage(agent.id, "show environment");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const commandEvent = service
+      .getEvents(run.id)
+      .find((event) => event.metadata.itemType === "command_execution");
+    expect(commandEvent).toBeDefined();
+    const outputPreview = String(commandEvent?.metadata.outputPreview);
+    expect(outputPreview).toContain("[REDACTED]");
+    expect(outputPreview.length).toBeLessThanOrEqual(200);
+    expect(outputPreview).not.toContain(fragment);
+
+    const serializedEvents = JSON.stringify(service.getEvents(run.id));
+    expect(serializedEvents).not.toContain(fragment);
+    expect(serializedEvents).not.toContain(secret);
   });
 
   it("restores the latest checkpoint on timeout retry", async () => {
@@ -390,6 +530,9 @@ describe("AgentGuard integration", () => {
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
     expect(service.getEvents(run.id).some((e) => e.type === "BUDGET_RAISED")).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
+    const roots = buildSpanTree(service.getEvents(run.id));
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.type).toBe("RUN_STARTED");
   });
 
   it("auto-compresses on projected budget exceed without HITL", async () => {
@@ -467,6 +610,355 @@ describe("AgentGuard integration", () => {
     expect(service.getRun(first.run.id).tokenBudget).toBe(originalBudget);
     expect(service.getRun(second.run.id).tokenBudget).toBe(99_999);
   });
+
+  it("emits a real turn span and never fabricates telemetry", async () => {
+    const runner: AgentRunner = {
+      async run(): Promise<RunnerResult> {
+        return { output: "quiet", threadId: "thread-quiet", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Quiet" });
+    const { run } = await service.sendMessage(agent.id, "say nothing");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getEvents(run.id);
+    const runStarted = events.find((event) => event.type === "RUN_STARTED");
+    const turn = events.find((event) => event.type === "TURN");
+    expect(turn).toBeDefined();
+    expect(turn?.status).toBe("ok");
+    expect(turn?.durationMs).toBeGreaterThanOrEqual(0);
+    expect(turn?.durationSource).toBe("measured");
+    expect(turn?.attemptIndex).toBe(0);
+    expect(turn?.parentEventId).toBe(runStarted?.id);
+    expect(events.some((event) => event.type === "MODEL_CALL")).toBe(false);
+    expect(events.every((event) => event.metadata.synthesized === undefined)).toBe(true);
+    expect(events.every((event) => event.category !== undefined)).toBe(true);
+    expect(events.every((event) => event.actor !== undefined)).toBe(true);
+  });
+
+  it("leaves the first item duration unknown and derives later inter-item duration", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({
+          type: "MODEL_CALL",
+          status: "ok",
+          observedAt: 1_000,
+        });
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          observedAt: 1_250,
+        });
+        return { output: "done", threadId: "t-duration", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Durations" });
+    const { run } = await service.sendMessage(agent.id, "measure");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const itemEvents = service
+      .getEvents(run.id)
+      .filter((event) => event.type === "MODEL_CALL" || event.type === "TOOL_CALL");
+    expect(itemEvents[0]?.durationMs).toBeNull();
+    expect(itemEvents[0]?.durationSource).toBeNull();
+    expect(itemEvents[1]?.durationMs).toBe(250);
+    expect(itemEvents[1]?.durationSource).toBe("inter_item_delta");
+  });
+
+  it("excludes unrecognized items from the budget projection count", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: {
+            itemType: "future_thing",
+            rawType: "future_thing",
+            unrecognized: true,
+          },
+        });
+        return { output: "done", threadId: "t-unrecognized", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, {
+      AGENTGUARD_TOKEN_BUDGET: "500",
+      AGENTGUARD_BUDGET_STRICT_RATIO: "0",
+      AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE: "0",
+      AGENTGUARD_BUDGET_EST_TOOL_TOKENS: "1000",
+      AGENTGUARD_BUDGET_CHARS_PER_TOKEN: "1000000",
+    });
+    const agent = await service.createAgent({ name: "UnknownBudget" });
+    const { run } = await service.sendMessage(agent.id, "future tool");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(
+      service
+        .getEvents(run.id)
+        .some((event) => event.type === "BUDGET_PROJECTED_EXCEED"),
+    ).toBe(false);
+  });
+
+  it("does not report a budget-cancelled turn as successful when the runner resolves", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({
+          type: "MODEL_CALL",
+          status: "ok",
+          metadata: { note: "projected over budget" },
+        });
+        return { output: "late success", threadId: "thread-late", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, {
+      AGENTGUARD_TOKEN_BUDGET: "100",
+      AGENTGUARD_BUDGET_STRICT_RATIO: "0",
+      AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE: "0",
+    });
+    const agent = await service.createAgent({ name: "NonAbortingCancel" });
+    const { run } = await service.sendMessage(agent.id, "stay within budget");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getEvents(run.id);
+    expect(events.some((event) => event.type === "BUDGET_PROJECTED_EXCEED")).toBe(true);
+    const turn = events.find((event) => event.type === "TURN");
+    expect(turn?.status).toBe("error");
+    expect(turn?.error).toBe(
+      "Mid-turn budget cancellation was requested, but the runner completed regardless",
+    );
+  });
+
+  it("nests incident and recovery spans under the failing span", async () => {
+    let calls = 0;
+    let rejectFirst!: (error: Error) => void;
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "MODEL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) return firstHang;
+        return { output: "recovered", threadId: "thread-2", usage: null };
+      },
+      cancel: async () => {
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Nested" });
+    const { run } = await service.sendMessage(agent.id, "do work");
+    await expect
+      .poll(() =>
+        service.getEvents(run.id).some((event) => event.type === "CHECKPOINT_CREATED"),
+      )
+      .toBe(true);
+    await service.injectFailure(run.id, "runtime_crash");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const events = service.getEvents(run.id);
+    const incident = events.find((event) => event.type === "INCIDENT_OPENED");
+    expect(incident?.parentEventId).not.toBeNull();
+
+    const failingId = incident!.parentEventId!;
+    const nested = events.filter((event) => event.parentEventId === failingId);
+    expect(nested.some((event) => event.type === "INCIDENT_OPENED")).toBe(true);
+    expect(nested.some((event) => event.type === "DIAGNOSIS_ISSUED")).toBe(true);
+    expect(nested.some((event) => event.type === "RECOVERY_STARTED")).toBe(true);
+    expect(nested.some((event) => event.type === "RECOVERY_COMPLETED")).toBe(true);
+
+    const restored = events.find((event) => event.type === "CHECKPOINT_RESTORED");
+    expect(restored).toBeDefined();
+    expect(restored?.parentEventId).not.toBeNull();
+    expect(restored?.parentEventId).toBe(failingId);
+    expect(restored?.metadata.checkpointId).toBeTruthy();
+
+    const error = events.find((event) => event.id === failingId);
+    const failedTurn = events.find((event) => event.id === error?.parentEventId);
+    expect(error?.type).toBe("ERROR");
+    expect(failedTurn?.type).toBe("TURN");
+    expect(failedTurn?.status).toBe("error");
+
+    const recoveredTurn = events.find(
+      (event) => event.type === "TURN" && event.attemptIndex === 1,
+    );
+    const verified = events.find((event) => event.type === "RECOVERY_VERIFIED");
+    expect(recoveredTurn).toBeDefined();
+    expect(verified?.parentEventId).toBe(recoveredTurn?.id);
+
+    const roots = buildSpanTree(events);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.type).toBe("RUN_STARTED");
+    for (const category of [
+      "orchestration",
+      "model_call",
+      "checkpoint",
+      "policy_decision",
+      "recovery",
+    ] as const) {
+      expect(events.some((event) => event.category === category), category).toBe(
+        true,
+      );
+    }
+  });
+
+  it("classifies a kill-path crash on a persisted span and restores the checkpoint", async () => {
+    let calls = 0;
+    let cancelCalled = false;
+    let rejectFirst!: (error: Error) => void;
+    const firstHang = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        await request.onEvent?.({
+          type: "TOOL_CALL",
+          status: "ok",
+          metadata: { step: calls },
+        });
+        if (calls === 1) return firstHang;
+        return { output: "recovered", threadId: "thread-kill", usage: null };
+      },
+      cancel: async () => {
+        cancelCalled = true;
+        rejectFirst(new RunCancelledError());
+        return true;
+      },
+      async kill() {
+        rejectFirst(new Error("Runtime exited with code 137"));
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "KillPath" });
+    await writeFile(path.join(agent.workspacePath, "work.txt"), "before", "utf8");
+    const { run } = await service.sendMessage(agent.id, "do work");
+    await expect
+      .poll(() =>
+        service.getEvents(run.id).some((event) => event.type === "CHECKPOINT_CREATED"),
+      )
+      .toBe(true);
+    await service.injectFailure(run.id, "runtime_crash");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    expect(cancelCalled).toBe(false);
+    expect(calls).toBeGreaterThanOrEqual(2);
+    const events = service.getEvents(run.id);
+    const crashSpan = events.find(
+      (event) =>
+        (event.type === "ERROR" || (event.type === "TURN" && event.status === "error")) &&
+        typeof event.error === "string" &&
+        /137|exited with code/i.test(event.error),
+    );
+    expect(crashSpan).toBeDefined();
+    expect(crashSpan?.error).toMatch(/137|exited with code/i);
+    const restored = events.find((event) => event.type === "CHECKPOINT_RESTORED");
+    expect(restored).toBeDefined();
+    expect(restored?.parentEventId).not.toBeNull();
+  });
+
+  it("parents a post-recovery budget error to the recovered turn", async () => {
+    let calls = 0;
+    const runner: AgentRunner = {
+      async run(): Promise<RunnerResult> {
+        calls += 1;
+        if (calls === 1) throw new Error("runtime crash");
+        return {
+          output: "recovered over budget",
+          threadId: "thread-recovered-budget",
+          usage: { inputTokens: 6, outputTokens: 5 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner, {
+      AGENTGUARD_TOKEN_BUDGET: "10",
+      AGENTGUARD_BUDGET_NEXT_TURN_ESTIMATE: "0",
+    });
+    const agent = await service.createAgent({ name: "RecoveredBudget" });
+    const { run } = await service.sendMessage(agent.id, "recover then exceed budget");
+    await expect.poll(() => service.getRun(run.id).status).toBe("awaiting_approval");
+
+    const events = service.getEvents(run.id);
+    const errors = events.filter((event) => event.type === "ERROR");
+    const recoveredTurn = events.find(
+      (event) => event.type === "TURN" && event.attemptIndex === 1,
+    );
+    expect(errors).toHaveLength(2);
+    expect(recoveredTurn).toBeDefined();
+    expect(errors[1]?.parentEventId).toBe(recoveredTurn?.id);
+
+    await service.resolveApproval(run.id, "approve");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("produces an acyclic tree rooted at the run span", async () => {
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        await request.onEvent?.({ type: "MODEL_CALL", status: "ok" });
+        return { output: "ok", threadId: "t", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Tree" });
+    const { run } = await service.sendMessage(agent.id, "hello");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const roots = buildSpanTree(service.getEvents(run.id));
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.type).toBe("RUN_STARTED");
+  });
+
+  it("cancels mid-turn from span data on a first attempt", async () => {
+    let calls = 0;
+    const runner: AgentRunner = {
+      async run(request: RunnerRequest): Promise<RunnerResult> {
+        calls += 1;
+        if (calls === 1) {
+          for (let index = 0; index < 40; index += 1) {
+            await request.onEvent?.({ type: "MODEL_CALL", status: "ok" });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return { output: "done", threadId: "t", usage: null };
+      },
+      cancel: async () => true,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    await service.updateAgentGuardSettings({ tokenBudget: 20_000 });
+    const agent = await service.createAgent({ name: "Budget" });
+    const { run } = await service.sendMessage(agent.id, "long task");
+    await expect.poll(() =>
+      service.getEvents(run.id).some((event) => event.type === "BUDGET_PROJECTED_EXCEED"),
+    ).toBe(true);
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
 });
 
 describe("AgentGuard fixtures", () => {
@@ -478,11 +970,27 @@ describe("AgentGuard fixtures", () => {
     );
     const crash = JSON.parse(
       await readFile(path.join(fixturesRoot, "crash-then-recover.json"), "utf8"),
-    ) as { events: string[] };
+    ) as {
+      events: string[];
+      shape: {
+        rootType: string;
+        requiredCategories: string[];
+        nestedUnderFailingSpan: string[];
+      };
+    };
     const secrets = JSON.parse(
       await readFile(path.join(fixturesRoot, "secrets-redacted.json"), "utf8"),
     ) as { forbidden: string[] };
     expect(crash.events).toContain("RECOVERY_VERIFIED");
+    expect(crash.events).toContain("TURN");
+    expect(crash.shape.rootType).toBe("RUN_STARTED");
+    expect(crash.shape.requiredCategories).toEqual([
+      "orchestration",
+      "model_call",
+      "checkpoint",
+      "policy_decision",
+      "recovery",
+    ]);
     expect(secrets.forbidden.length).toBeGreaterThan(0);
     const soft = JSON.parse(
       await readFile(path.join(fixturesRoot, "budget-soft-compress.json"), "utf8"),

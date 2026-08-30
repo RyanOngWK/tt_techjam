@@ -8,6 +8,8 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { patchAgentGuardSettingsSchema } from "./agentguard/settings.js";
+import { matchesFilter } from "./agentguard/span-tree.js";
+import type { ActorType, EventStatus, SpanCategory } from "./types.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -135,6 +137,8 @@ export async function createApp(
     return reply.code(202).send(result);
   });
 
+  app.get("/api/runs", async () => ({ runs: service.listRuns() }));
+
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
@@ -145,9 +149,40 @@ export async function createApp(
     const query = z
       .object({
         format: z.enum(["json", "download"]).optional(),
+        category: z.string().optional(),
+        actor: z.string().optional(),
+        status: z.string().optional(),
+        since: z.string().optional(),
+        tree: z.enum(["true", "false"]).optional(),
       })
       .parse(request.query);
-    const events = service.getEvents(id);
+
+    const split = (value?: string) =>
+      value
+        ? value.split(",").map((part) => part.trim()).filter(Boolean)
+        : undefined;
+
+    const categories = split(query.category) as SpanCategory[] | undefined;
+    const actors = split(query.actor) as ActorType[] | undefined;
+    const statuses = split(query.status) as EventStatus[] | undefined;
+
+    const filter =
+      categories || actors || statuses || query.since
+        ? {
+            ...(categories ? { category: categories } : {}),
+            ...(actors ? { actor: actors } : {}),
+            ...(statuses ? { status: statuses } : {}),
+            ...(query.since ? { since: query.since } : {}),
+          }
+        : undefined;
+
+    const events =
+      query.tree === "true"
+        ? service.getSpanTree(id, filter)
+        : service
+            .getEvents(id)
+            .filter((event) => (filter ? matchesFilter(event, filter) : true));
+
     if (query.format === "download" || query.format === "json") {
       reply.header(
         "Content-Disposition",

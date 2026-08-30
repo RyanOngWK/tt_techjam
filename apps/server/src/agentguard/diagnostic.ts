@@ -271,6 +271,8 @@ export async function issueDiagnosis(
     signals: FailureSignals;
     strategy: RecoveryStrategy | null;
     strategyRationale: string | null;
+    parentEventId?: string | null;
+    attemptIndex?: number;
   },
 ): Promise<DiagnosisRecord> {
   const diagnosis = diagnoseFailure(input.signals);
@@ -307,6 +309,8 @@ export async function issueDiagnosis(
     runId: input.runId,
     type: "DIAGNOSIS_ISSUED",
     status: "error",
+    parentEventId: input.parentEventId ?? null,
+    attemptIndex: input.attemptIndex ?? 0,
     metadata: {
       diagnosisId: record.id,
       incidentId: record.incidentId,
@@ -329,6 +333,10 @@ export async function updateDiagnosis(
     strategyRationale?: string | null;
     summary?: string;
   },
+  trace?: {
+    parentEventId?: string | null;
+    attemptIndex?: number;
+  },
 ): Promise<DiagnosisRecord | null> {
   const updated = await store.mutate((database) => {
     const stored = database.diagnoses.find(
@@ -350,6 +358,8 @@ export async function updateDiagnosis(
       runId: updated.runId,
       type: "DIAGNOSIS_VERDICT",
       status: updated.status === "verified" ? "ok" : "error",
+      parentEventId: trace?.parentEventId ?? null,
+      attemptIndex: trace?.attemptIndex ?? 0,
       metadata: {
         diagnosisId: updated.id,
         incidentId: updated.incidentId,

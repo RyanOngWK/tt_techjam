@@ -109,6 +109,17 @@ export class ContainerCodexRunner implements AgentRunner {
     return true;
   }
 
+  async kill(agentId: string): Promise<boolean> {
+    const active = this.active.get(agentId);
+    if (!active) return false;
+    // Deliberately does NOT set active.cancelled. The child must be seen to
+    // exit non-zero so classifyFailure reads a genuine "exited with code"
+    // signal rather than treating this as an operator cancellation.
+    await this.removeContainer(active);
+    await active.settled;
+    return true;
+  }
+
   private removeContainer(active: ActiveContainer): Promise<void> {
     if (!active.termination) {
       active.termination = execFileAsync(

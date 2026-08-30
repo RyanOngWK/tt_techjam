@@ -3,7 +3,8 @@
 Volc Agent Launchpad is a single-user, single-node agent control-plane starter
 kit for short middleware hackathons. It offers a React browser UI, a Fastify
 control plane, persistent agent workspaces and Codex sessions, and Volcengine
-Ark-backed Codex execution. [README](../README.md) | [Architecture source](../docs/ARCHITECTURE.md)
+Ark-backed Codex execution. The selected middleware track is **Glass Box —
+trace and audit** (AgentGuard span tree). [README](../README.md) | [Architecture source](../docs/ARCHITECTURE.md) | [AgentGuard](agentguard.md)
 
 ## What It Manages
 

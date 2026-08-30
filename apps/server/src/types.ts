@@ -26,11 +26,13 @@ export type FailureType =
 export type RecoveryStrategy = "retry" | "restart_resume" | "compress_resume" | "abort";
 export type EventType =
   | "RUN_STARTED"
+  | "TURN"
   | "RUN_COMPLETED"
   | "RUN_FAILED"
   | "MODEL_CALL"
   | "TOOL_CALL"
   | "CHECKPOINT_CREATED"
+  | "CHECKPOINT_RESTORED"
   | "ERROR"
   | "INCIDENT_OPENED"
   | "DIAGNOSIS_ISSUED"
@@ -49,6 +51,20 @@ export type EventType =
   | "BUDGET_EXCEEDED"
   | "BUDGET_RAISED";
 export type EventStatus = "ok" | "error" | "running";
+
+export type SpanCategory =
+  | "orchestration"
+  | "model_call"
+  | "tool_call"
+  | "checkpoint"
+  | "policy_decision"
+  | "human_approval"
+  | "recovery";
+
+export type ActorType = "human" | "agent" | "middleware";
+
+export type DurationSource = "measured" | "inter_item_delta";
+
 export type Severity = "low" | "medium" | "high";
 export type DiagnosisStatus =
   | "issued"
@@ -113,9 +129,14 @@ export interface TraceEvent {
   runId: string;
   parentEventId: string | null;
   type: EventType;
+  category: SpanCategory;
+  actor: ActorType;
   status: EventStatus;
   timestamp: string;
+  endedAt: string | null;
   durationMs: number | null;
+  durationSource: DurationSource | null;
+  attemptIndex: number;
   metadata: Record<string, unknown>;
   error: string | null;
 }
@@ -254,6 +275,7 @@ export interface RunnerResult {
 export interface RunnerStreamEvent {
   type: EventType;
   status: EventStatus;
+  observedAt?: number;
   metadata?: Record<string, unknown>;
   error?: string | null;
 }
@@ -269,5 +291,6 @@ export interface RunnerRequest {
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
+  kill?(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }

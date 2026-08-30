@@ -8,7 +8,7 @@ knowledge for faster navigation and synthesis.
 
 - [Overview](overview.md): purpose, scope, and current constraints.
 - [Architecture](architecture.md): component boundaries and the request/run flow.
-- [AgentGuard](agentguard.md): reliability middleware (diagnose, trace, detect, recover, proactive budget, HITL).
+- [AgentGuard](agentguard.md): **Glass Box — trace and audit.** Reliability middleware: value- and pattern-redacted single-root causal span tree (`runId` = trace, `eventId` = span; category, actor, parent, attempt, qualified duration), diagnose, detect, recover, proactive budget, HITL. Real `runtime_crash` container kill when the container runner is active.
 
 ## System Areas
 

@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeTemporaryDirectories } from "./test/settle.js";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
@@ -27,12 +28,7 @@ class FakeRunner implements AgentRunner {
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  const { rm } = await import("node:fs/promises");
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
-  );
+  await removeTemporaryDirectories(temporaryDirectories);
 });
 
 async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {

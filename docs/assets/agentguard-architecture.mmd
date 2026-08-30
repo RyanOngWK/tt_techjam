@@ -1,0 +1,18 @@
+flowchart TB
+  UI["Web UI — trace view<br/>(floating window)"]
+  API["Fastify control plane<br/>/api/*"]
+  AS["AgentService + TraceContext<br/>TRUST BOUNDARY"]
+  SC["SPAN COLLECTOR<br/>startSpan / endSpan<br/>category · actor · parent · attempt<br/>redact before write"]
+  CONS["CONSUMERS<br/>detector · diagnosis<br/>recovery · budget · checkpoint"]
+  STORE[("Span store<br/>runId = trace · eventId = span")]
+  RUNNER["AgentRunner<br/>Codex / Ark"]
+
+  UI -->|"no secrets"| API
+  API --> AS
+  AS --> SC
+  SC -->|"spans"| CONS
+  CONS -->|"decisions written back<br/>as nested spans"| SC
+  SC --> STORE
+  STORE --> API
+  AS --> RUNNER
+  RUNNER -->|"observedAt + redacted attributes"| SC

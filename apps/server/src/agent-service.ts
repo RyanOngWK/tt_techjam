@@ -26,6 +26,7 @@ import {
   shouldAbortAfterAttempts,
   strategyRationaleFor,
 } from "./agentguard/policy.js";
+import { registerSecretValues } from "./agentguard/redact.js";
 import {
   abortIncident,
   completeRecoveryAttempt,
@@ -41,7 +42,18 @@ import {
   validateEffectiveRatios,
   type PatchAgentGuardSettingsInput,
 } from "./agentguard/settings.js";
-import { appendTraceEvent, eventsForRun } from "./agentguard/trace-collector.js";
+import {
+  buildSpanTree,
+  summarizeRun,
+  type SpanFilter,
+  type SpanNode,
+} from "./agentguard/span-tree.js";
+import {
+  appendTraceEvent,
+  endSpan,
+  eventsForRun,
+  startSpan,
+} from "./agentguard/trace-collector.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -83,6 +95,14 @@ type ApprovalWaiter = {
   incidentId: string;
 };
 
+interface TraceContext {
+  runId: string;
+  runSpanId: string;
+  turnSpanId: string | null;
+  failingSpanId: string | null;
+  attemptIndex: number;
+}
+
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
@@ -99,6 +119,16 @@ export class AgentService {
   ) {}
 
   async initialize(): Promise<void> {
+    const { skippedTooShort } = registerSecretValues([
+      { label: "arkApiKey", value: this.config.arkApiKey },
+      { label: "authToken", value: this.config.authToken },
+    ]);
+    if (skippedTooShort.length > 0) {
+      console.warn(
+        "Secret values too short to register for redaction: " +
+          skippedTooShort.join(", "),
+      );
+    }
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
@@ -260,6 +290,50 @@ export class AgentService {
     return eventsForRun(this.store, runId);
   }
 
+  listRuns(): Array<{
+    id: string;
+    agentId: string;
+    agentName: string;
+    status: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    durationMs: number | null;
+    spanCount: number;
+    errorCount: number;
+    incidentCount: number;
+    tokensUsed: number;
+    tokenBudget: number;
+  }> {
+    const database = this.store.snapshot();
+    const agentNames = new Map(database.agents.map((agent) => [agent.id, agent.name]));
+    return database.runs
+      .slice()
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((run) => {
+        const events = database.events.filter((event) => event.runId === run.id);
+        const summary = summarizeRun(events);
+        return {
+          id: run.id,
+          agentId: run.agentId,
+          agentName: agentNames.get(run.agentId) ?? "(deleted)",
+          status: run.status,
+          startedAt: run.startedAt,
+          completedAt: run.completedAt,
+          durationMs: summary.durationMs,
+          spanCount: summary.spanCount,
+          errorCount: summary.errorCount,
+          incidentCount: database.incidents.filter((item) => item.runId === run.id).length,
+          tokensUsed: run.tokensUsed,
+          tokenBudget: run.tokenBudget,
+        };
+      });
+  }
+
+  getSpanTree(runId: string, filter?: SpanFilter): SpanNode[] {
+    this.getRun(runId);
+    return buildSpanTree(eventsForRun(this.store, runId), filter);
+  }
+
   getIncidents(runId?: string): Incident[] {
     const incidents = this.store.snapshot().incidents;
     return (runId ? incidents.filter((item) => item.runId === runId) : incidents).sort(
@@ -305,8 +379,12 @@ export class AgentService {
       throw new HttpError(409, "Failure injection requires an active run");
     }
     this.pendingInjections.set(runId, type);
-    this.injectionCancels.add(run.agentId);
-    await this.runner.cancel(run.agentId);
+    if (type === "runtime_crash" && typeof this.runner.kill === "function") {
+      await this.runner.kill(run.agentId);
+    } else {
+      this.injectionCancels.add(run.agentId);
+      await this.runner.cancel(run.agentId);
+    }
     return { ok: true };
   }
 
@@ -322,10 +400,13 @@ export class AgentService {
     if (!waiter) {
       throw new HttpError(409, "No pending approval waiter for this run");
     }
+    const incidentTrace = this.traceOptionsForIncident(waiter.incidentId);
     await appendTraceEvent(this.store, {
       runId,
       type: decision === "approve" ? "APPROVAL_GRANTED" : "APPROVAL_DENIED",
       status: decision === "approve" ? "ok" : "error",
+      parentEventId: incidentTrace.parentEventId,
+      attemptIndex: incidentTrace.attemptIndex,
       metadata: { incidentId: waiter.incidentId, decision },
     });
     waiter.resolve(decision);
@@ -429,12 +510,19 @@ export class AgentService {
         storedRun.startedAt = now();
       }
     });
-    await appendTraceEvent(this.store, {
+    const runSpan = await appendTraceEvent(this.store, {
       runId: run.id,
       type: "RUN_STARTED",
-      status: "running",
+      status: "ok",
       metadata: { agentId: agentAtStart.id },
     });
+    const trace: TraceContext = {
+      runId: run.id,
+      runSpanId: runSpan.id,
+      turnSpanId: null,
+      failingSpanId: null,
+      attemptIndex: 0,
+    };
 
     let pendingVerifyAttemptId: string | null = null;
     let agent = this.getAgent(agentAtStart.id);
@@ -446,6 +534,7 @@ export class AgentService {
     while (attempts < 8) {
       attempts += 1;
       try {
+        trace.attemptIndex = attempts - 1;
         if (this.cancellationRequests.has(agent.id) && !this.pendingInjections.has(run.id)) {
           throw new RunCancelledError();
         }
@@ -459,6 +548,7 @@ export class AgentService {
           estimates,
           lastEmittedTier,
           preTurnBlockedOnce,
+          trace,
         });
         if (prepared.action === "awaiting_approval") {
           const decision = await this.waitForApproval(run.id, prepared.incidentId);
@@ -467,6 +557,7 @@ export class AgentService {
               this.store,
               prepared.incidentId,
               "Operator denied recovery after pre-turn budget block",
+              this.traceOptionsForIncident(prepared.incidentId),
             );
             await this.failRun(agent.id, run.id, "Budget exceeded; recovery denied", false);
             return;
@@ -484,18 +575,38 @@ export class AgentService {
         let modelCalls = 0;
         let toolCalls = 0;
         let streamBytes = 0;
+        let lastObservedAt: number | null = null;
         let midTurnCancelIssued = false;
 
+        trace.turnSpanId = await startSpan(this.store, {
+          runId: trace.runId,
+          type: "TURN",
+          parentEventId: trace.runSpanId,
+          attemptIndex: trace.attemptIndex,
+          metadata: {
+            attemptIndex: trace.attemptIndex,
+            tier: prepared.lastEmittedTier,
+            promptWrapped: promptForRunner !== turnPrompt,
+            codexThreadId: agent.codexThreadId,
+          },
+        });
         const result = await this.runner.run({
           agentId: agent.id,
           workspacePath: agent.workspacePath,
           prompt: promptForRunner,
           threadId: agent.codexThreadId,
           onEvent: async (event) => {
+            const observedAt = event.observedAt ?? Date.now();
+            const deltaMs = lastObservedAt === null ? null : observedAt - lastObservedAt;
+            lastObservedAt = observedAt;
             await appendTraceEvent(this.store, {
               runId: run.id,
               type: event.type,
               status: event.status,
+              parentEventId: trace.turnSpanId,
+              attemptIndex: trace.attemptIndex,
+              durationMs: deltaMs,
+              durationSource: deltaMs === null ? null : "inter_item_delta",
               metadata: event.metadata ?? {},
               error: event.error ?? null,
             });
@@ -504,18 +615,21 @@ export class AgentService {
               event.status === "ok"
             ) {
               if (event.type === "MODEL_CALL") modelCalls += 1;
-              if (event.type === "TOOL_CALL") toolCalls += 1;
+              if (event.type === "TOOL_CALL" && event.metadata?.unrecognized !== true) {
+                toolCalls += 1;
+              }
               streamBytes += estimateEventBytes(event.metadata);
-              await this.checkpointAfterSpan(agent.id, run.id, event.type.toLowerCase());
+              await this.checkpointAfterSpan(
+                agent.id,
+                run.id,
+                event.type.toLowerCase(),
+                trace.turnSpanId,
+                trace.attemptIndex,
+              );
               agent = this.getAgent(agent.id);
 
               if (!midTurnCancelIssued) {
                 const liveRun = this.getRun(run.id);
-                const tier = budgetTier(
-                  liveRun.tokensUsed,
-                  liveRun.tokenBudget,
-                  estimates,
-                );
                 const projected = projectUsage({
                   tokensUsed: liveRun.tokensUsed,
                   modelCalls,
@@ -523,6 +637,11 @@ export class AgentService {
                   streamBytes,
                   estimates,
                 });
+                const tier = budgetTier(
+                  Math.max(liveRun.tokensUsed, projected),
+                  liveRun.tokenBudget,
+                  estimates,
+                );
                 if (
                   shouldCancelMidTurn({
                     projected,
@@ -536,6 +655,8 @@ export class AgentService {
                     runId: run.id,
                     type: "BUDGET_PROJECTED_EXCEED",
                     status: "error",
+                    parentEventId: trace.turnSpanId,
+                    attemptIndex: trace.attemptIndex,
                     metadata: {
                       projected,
                       tokensUsed: liveRun.tokensUsed,
@@ -552,22 +673,38 @@ export class AgentService {
           },
         });
 
-        // Ensure at least one checkpoint and span for demos with sparse JSONL.
-        const existingSpans = eventsForRun(this.store, run.id).filter(
-          (event) => event.type === "MODEL_CALL" || event.type === "TOOL_CALL",
-        );
-        if (existingSpans.length === 0) {
-          await appendTraceEvent(this.store, {
-            runId: run.id,
-            type: "MODEL_CALL",
-            status: "ok",
-            metadata: { synthesized: true },
+        const completedTurnSpanId = trace.turnSpanId;
+        if (completedTurnSpanId) {
+          await endSpan(this.store, completedTurnSpanId, {
+            status: midTurnCancelIssued ? "error" : "ok",
+            error: midTurnCancelIssued
+              ? "Mid-turn budget cancellation was requested, but the runner completed regardless"
+              : null,
+            metadata: { usage: result.usage },
           });
-          await this.checkpointAfterSpan(agent.id, run.id, "after_turn");
-          agent = this.getAgent(agent.id);
+          if (midTurnCancelIssued) {
+            trace.failingSpanId = completedTurnSpanId;
+          } else {
+            trace.failingSpanId = null;
+          }
+          trace.turnSpanId = null;
         }
+        // Every completed turn gives recovery a post-turn resume point. This must
+        // run after turnSpanId is cleared so a checkpoint failure cannot re-close
+        // a successfully completed turn as an error in the surrounding catch.
+        await this.checkpointAfterSpan(
+          agent.id,
+          run.id,
+          "after_turn",
+          trace.runSpanId,
+          trace.attemptIndex,
+        );
+        agent = this.getAgent(agent.id);
         if (pendingVerifyAttemptId) {
-          await verifyRecovery(this.store, pendingVerifyAttemptId);
+          await verifyRecovery(this.store, pendingVerifyAttemptId, {
+            parentEventId: completedTurnSpanId,
+            attemptIndex: trace.attemptIndex,
+          });
           pendingVerifyAttemptId = null;
         }
 
@@ -599,11 +736,14 @@ export class AgentService {
             runId: run.id,
             type: "BUDGET_EXCEEDED",
             status: "error",
+            parentEventId: trace.runSpanId,
+            attemptIndex: trace.attemptIndex,
             metadata: {
               tokensUsed: runAfterUsage.tokensUsed,
               tokenBudget: runAfterUsage.tokenBudget,
             },
           });
+          trace.failingSpanId = completedTurnSpanId;
           const recovered = await this.handleFailure({
             agent,
             run: runAfterUsage,
@@ -615,6 +755,7 @@ export class AgentService {
               runAfterUsage.tokensUsed +
               "/" +
               runAfterUsage.tokenBudget,
+            trace,
           });
           if (recovered.action === "awaiting_approval") {
             const decision = await this.waitForApproval(run.id, recovered.incidentId);
@@ -623,6 +764,7 @@ export class AgentService {
                 this.store,
                 recovered.incidentId,
                 "Operator denied recovery after budget exceed",
+                this.traceOptionsForIncident(recovered.incidentId),
               );
               await this.failRun(agent.id, run.id, "Budget exceeded; recovery denied", false);
               return;
@@ -638,6 +780,7 @@ export class AgentService {
         if (injected) {
           this.pendingInjections.delete(run.id);
           this.injectionCancels.delete(agent.id);
+          trace.failingSpanId = completedTurnSpanId;
           const recovered = await this.handleFailure({
             agent,
             run: this.getRun(run.id),
@@ -645,6 +788,7 @@ export class AgentService {
             timedOut: injected === "tool_timeout",
             cancelled: false,
             message: "Injected " + injected,
+            trace,
           });
           const continued = await this.applyRecoveryContinuation({
             recovered,
@@ -652,6 +796,7 @@ export class AgentService {
             run,
             pendingVerifyAttemptId,
             originalPrompt: run.prompt,
+            trace,
           });
           if (continued.outcome === "return") return;
           pendingVerifyAttemptId = continued.pendingVerifyAttemptId;
@@ -689,12 +834,19 @@ export class AgentService {
           runId: run.id,
           type: "RUN_COMPLETED",
           status: "ok",
+          parentEventId: trace.runSpanId,
+          attemptIndex: trace.attemptIndex,
           metadata: { usage: result.usage },
         });
         return;
       } catch (error) {
         const cancelled = error instanceof RunCancelledError;
         const message = error instanceof Error ? error.message : String(error);
+        if (trace.turnSpanId) {
+          await endSpan(this.store, trace.turnSpanId, { status: "error", error: message });
+          trace.failingSpanId = trace.turnSpanId;
+          trace.turnSpanId = null;
+        }
         const injected = this.pendingInjections.get(run.id);
         const injectionCancel = this.injectionCancels.has(agent.id);
         const budgetProjectedCancel = this.budgetProjectedCancels.has(agent.id);
@@ -705,6 +857,8 @@ export class AgentService {
             runId: run.id,
             type: "RUN_FAILED",
             status: "error",
+            parentEventId: trace.runSpanId,
+            attemptIndex: trace.attemptIndex,
             error: message,
             metadata: { cancelled: true },
           });
@@ -722,7 +876,13 @@ export class AgentService {
           (injected === "runtime_crash" || /exited with code|crash/i.test(message)) &&
           !this.latestCheckpoint(run.id)
         ) {
-          await this.checkpointAfterSpan(agent.id, run.id, "pre_recovery");
+          await this.checkpointAfterSpan(
+            agent.id,
+            run.id,
+            "pre_recovery",
+            trace.runSpanId,
+            trace.attemptIndex,
+          );
           agent = this.getAgent(agent.id);
         }
 
@@ -736,6 +896,7 @@ export class AgentService {
           message: budgetProjectedCancel
             ? "Token budget projected exceed; compressing context"
             : message,
+          trace,
         });
         const continued = await this.applyRecoveryContinuation({
           recovered,
@@ -743,6 +904,7 @@ export class AgentService {
           run,
           pendingVerifyAttemptId,
           originalPrompt: run.prompt,
+          trace,
         });
         if (continued.outcome === "return") return;
         pendingVerifyAttemptId = continued.pendingVerifyAttemptId;
@@ -823,6 +985,7 @@ export class AgentService {
     estimates: BudgetEstimates;
     lastEmittedTier: BudgetTier | "none";
     preTurnBlockedOnce: boolean;
+    trace: TraceContext;
   }): Promise<
     | {
         action: "ok";
@@ -858,6 +1021,8 @@ export class AgentService {
           runId: run.id,
           type: "BUDGET_EXCEEDED",
           status: "error",
+          parentEventId: input.trace.runSpanId,
+          attemptIndex: input.trace.attemptIndex,
           metadata: {
             reason: "pre_turn_block",
             tokensUsed: run.tokensUsed,
@@ -872,6 +1037,7 @@ export class AgentService {
           cancelled: false,
           message:
             "Pre-turn budget block: " + run.tokensUsed + "/" + run.tokenBudget,
+          trace: input.trace,
         });
         if (recovered.action === "awaiting_approval") {
           return { action: "awaiting_approval", incidentId: recovered.incidentId };
@@ -896,6 +1062,8 @@ export class AgentService {
         runId: run.id,
         type: "BUDGET_COMPRESSED",
         status: "ok",
+        parentEventId: input.trace.runSpanId,
+        attemptIndex: input.trace.attemptIndex,
         metadata: { reason: "pre_turn_block", tier: "strict" },
       });
       return {
@@ -912,6 +1080,8 @@ export class AgentService {
         runId: run.id,
         type: "BUDGET_SOFT_LIMIT",
         status: "ok",
+        parentEventId: input.trace.runSpanId,
+        attemptIndex: input.trace.attemptIndex,
         metadata: {
           tier,
           tokensUsed: run.tokensUsed,
@@ -954,6 +1124,7 @@ export class AgentService {
     run: AgentRun;
     pendingVerifyAttemptId: string | null;
     originalPrompt: string;
+    trace: TraceContext;
   }): Promise<{
     outcome: "continue" | "return";
     agent: Agent;
@@ -972,6 +1143,7 @@ export class AgentService {
           this.store,
           recovered.incidentId,
           "Operator denied recovery",
+          this.traceOptionsForIncident(recovered.incidentId),
         );
         await this.failRun(agent.id, run.id, "Recovery denied by operator", false);
         return {
@@ -1026,6 +1198,8 @@ export class AgentService {
           runId: run.id,
           type: "BUDGET_COMPRESSED",
           status: "ok",
+          parentEventId: input.trace.runSpanId,
+          attemptIndex: input.trace.attemptIndex,
           metadata: { reason: "compress_resume" },
         });
         return {
@@ -1067,30 +1241,42 @@ export class AgentService {
     agentId: string,
     runId: string,
     boundary: string,
+    parentEventId: string | null,
+    attemptIndex: number,
   ): Promise<void> {
     const agent = this.getAgent(agentId);
-    const checkpoint = await createWorkspaceCheckpoint({
-      dataDirectory: this.config.dataDirectory,
-      runId,
-      agentId,
-      workspacePath: agent.workspacePath,
-      codexThreadId: agent.codexThreadId,
-      boundary,
-    });
-    await this.store.mutate(async (database) => {
-      database.checkpoints.push(checkpoint);
-      database.checkpoints = await pruneCheckpoints(database.checkpoints, runId);
-    });
-    await appendTraceEvent(this.store, {
-      runId,
-      type: "CHECKPOINT_CREATED",
-      status: "ok",
-      metadata: {
-        checkpointId: checkpoint.id,
+    try {
+      const checkpoint = await createWorkspaceCheckpoint({
+        dataDirectory: this.config.dataDirectory,
+        runId,
+        agentId,
+        workspacePath: agent.workspacePath,
+        codexThreadId: agent.codexThreadId,
         boundary,
-        codexThreadId: checkpoint.codexThreadId,
-      },
-    });
+      });
+      await this.store.mutate(async (database) => {
+        database.checkpoints.push(checkpoint);
+        database.checkpoints = await pruneCheckpoints(database.checkpoints, runId);
+      });
+      await appendTraceEvent(this.store, {
+        runId,
+        type: "CHECKPOINT_CREATED",
+        status: "ok",
+        parentEventId,
+        attemptIndex,
+        metadata: {
+          checkpointId: checkpoint.id,
+          boundary,
+          codexThreadId: checkpoint.codexThreadId,
+        },
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Workspace checkpoint failed";
+      console.warn(
+        `[AgentGuard] checkpoint skipped (${boundary}, run ${runId}): ${message}`,
+      );
+    }
   }
 
   private async handleFailure(input: {
@@ -1101,6 +1287,7 @@ export class AgentService {
     cancelled: boolean;
     message: string;
     budgetProjectedExceeded?: boolean;
+    trace: TraceContext;
   }): Promise<
     | { action: "done" }
     | {
@@ -1118,9 +1305,17 @@ export class AgentService {
       runId: input.run.id,
       type: "ERROR",
       status: "error",
+      parentEventId:
+        input.trace.failingSpanId ?? input.trace.turnSpanId ?? input.trace.runSpanId,
+      attemptIndex: input.trace.attemptIndex,
       error: input.message,
       metadata: { injected: input.injected },
     });
+    input.trace.failingSpanId = errorEvent.id;
+    const failureTrace = {
+      parentEventId: input.trace.failingSpanId,
+      attemptIndex: input.trace.attemptIndex,
+    };
     const failureType = classifyFailure({
       injected: input.injected,
       timedOut: input.timedOut,
@@ -1136,6 +1331,8 @@ export class AgentService {
       eventId: errorEvent.id,
       failureType,
       severity: severityFor(failureType),
+      parentEventId: input.trace.failingSpanId,
+      attemptIndex: input.trace.attemptIndex,
     });
 
     const strategy = selectStrategy(failureType);
@@ -1157,6 +1354,8 @@ export class AgentService {
       },
       strategy,
       strategyRationale: strategyRationaleFor(failureType, strategy),
+      parentEventId: input.trace.failingSpanId,
+      attemptIndex: input.trace.attemptIndex,
     });
     const priorAttempts = this.store
       .snapshot()
@@ -1175,6 +1374,7 @@ export class AgentService {
         this.store,
         incident,
         "Token budget exceeded; approve to raise budget or abort",
+        failureTrace,
       );
       return {
         action: "awaiting_approval",
@@ -1195,6 +1395,7 @@ export class AgentService {
           this.store,
           incident,
           "Budget compress recoveries exhausted; approve to raise budget or abort",
+          failureTrace,
         );
         return {
           action: "awaiting_approval",
@@ -1209,6 +1410,7 @@ export class AgentService {
         strategy: "compress_resume",
         priorAttempts,
         errorEventId: errorEvent.id,
+        ...failureTrace,
       });
     }
 
@@ -1223,6 +1425,7 @@ export class AgentService {
         this.store,
         incident,
         "Additional crash recovery requires operator approval",
+        failureTrace,
       );
       return {
         action: "awaiting_approval",
@@ -1243,6 +1446,7 @@ export class AgentService {
         this.store,
         incident.id,
         "Recovery policy aborted: " + failureType,
+        failureTrace,
       );
       await this.store.mutate((database) => {
         const agent = database.agents.find((item) => item.id === input.agent.id);
@@ -1256,6 +1460,8 @@ export class AgentService {
         runId: input.run.id,
         type: "RUN_FAILED",
         status: "error",
+        parentEventId: input.trace.runSpanId,
+        attemptIndex: input.trace.attemptIndex,
         error: input.message,
       });
       return { action: "done" };
@@ -1273,10 +1479,16 @@ export class AgentService {
         strategy,
         priorAttempts,
         errorEventId: errorEvent.id,
+        ...failureTrace,
       });
     }
 
-    await abortIncident(this.store, incident.id, "No recovery strategy");
+    await abortIncident(
+      this.store,
+      incident.id,
+      "No recovery strategy",
+      failureTrace,
+    );
     return { action: "done" };
   }
 
@@ -1287,6 +1499,8 @@ export class AgentService {
     strategy: "retry" | "restart_resume" | "compress_resume";
     priorAttempts: number;
     errorEventId: string;
+    parentEventId: string | null;
+    attemptIndex: number;
   }): Promise<
     | { action: "done" }
     | {
@@ -1301,6 +1515,10 @@ export class AgentService {
         this.store,
         input.incident.id,
         "No checkpoint available for " + input.strategy,
+        {
+          parentEventId: input.parentEventId,
+          attemptIndex: input.attemptIndex,
+        },
       );
       await this.failRun(input.agent.id, input.run.id, "No checkpoint available", false);
       return { action: "done" };
@@ -1312,11 +1530,25 @@ export class AgentService {
         retryOf: input.errorEventId,
         checkpointId: checkpoint.id,
       },
+      parentEventId: input.parentEventId,
+      attemptIndex: input.attemptIndex,
     });
     try {
       await restoreWorkspaceCheckpoint({
         workspacePath: input.agent.workspacePath,
         checkpoint,
+      });
+      await appendTraceEvent(this.store, {
+        runId: input.run.id,
+        type: "CHECKPOINT_RESTORED",
+        status: "ok",
+        parentEventId: input.parentEventId,
+        attemptIndex: input.attemptIndex,
+        metadata: {
+          checkpointId: checkpoint.id,
+          workspacePath: input.agent.workspacePath,
+          codexThreadId: checkpoint.codexThreadId,
+        },
       });
       await this.store.mutate((database) => {
         const agent = database.agents.find((item) => item.id === input.agent.id);
@@ -1344,11 +1576,22 @@ export class AgentService {
         tokenBudget: restoredRun.tokenBudget,
         degraded: input.strategy === "compress_resume",
       };
-      await updateDiagnosis(this.store, input.incident.id, {
-        status: "acted",
-        stateDelta,
+      await updateDiagnosis(
+        this.store,
+        input.incident.id,
+        {
+          status: "acted",
+          stateDelta,
+        },
+        {
+          parentEventId: input.parentEventId,
+          attemptIndex: input.attemptIndex,
+        },
+      );
+      await completeRecoveryAttempt(this.store, attempt.id, "succeeded", null, {
+        parentEventId: input.parentEventId,
+        attemptIndex: input.attemptIndex,
       });
-      await completeRecoveryAttempt(this.store, attempt.id, "succeeded");
       return {
         action: input.strategy,
         attemptId: attempt.id,
@@ -1356,8 +1599,14 @@ export class AgentService {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await completeRecoveryAttempt(this.store, attempt.id, "failed", message);
-      await abortIncident(this.store, input.incident.id, message);
+      await completeRecoveryAttempt(this.store, attempt.id, "failed", message, {
+        parentEventId: input.parentEventId,
+        attemptIndex: input.attemptIndex,
+      });
+      await abortIncident(this.store, input.incident.id, message, {
+        parentEventId: input.parentEventId,
+        attemptIndex: input.attemptIndex,
+      });
       await this.failRun(input.agent.id, input.run.id, message, false);
       return { action: "done" };
     }
@@ -1380,12 +1629,18 @@ export class AgentService {
       .snapshot()
       .incidents.find((item) => item.id === input.incidentId);
     if (!incident) return { action: "done" };
+    const trace = this.traceOptionsForIncident(incident.id);
     const strategy =
       input.failureType === "budget_exceeded"
         ? "abort"
         : selectStrategy(input.failureType);
     if (strategy === "abort") {
-      await abortIncident(this.store, incident.id, "Approved path still aborts");
+      await abortIncident(
+        this.store,
+        incident.id,
+        "Approved path still aborts",
+        trace,
+      );
       return { action: "done" };
     }
     const priorAttempts = this.store
@@ -1400,10 +1655,12 @@ export class AgentService {
       strategy,
       priorAttempts,
       errorEventId: incident.eventId,
+      ...trace,
     });
   }
 
   private async raiseTokenBudget(runId: string, incidentId: string): Promise<void> {
+    const incidentTrace = this.traceOptionsForIncident(incidentId);
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === runId);
       const incident = database.incidents.find((item) => item.id === incidentId);
@@ -1422,9 +1679,16 @@ export class AgentService {
       runId,
       type: "BUDGET_RAISED",
       status: "ok",
+      parentEventId: this.runSpanId(runId),
+      attemptIndex: incidentTrace.attemptIndex,
       metadata: { incidentId, raisedBudget: true },
     });
-    await updateDiagnosis(this.store, incidentId, { status: "verified" });
+    await updateDiagnosis(
+      this.store,
+      incidentId,
+      { status: "verified" },
+      incidentTrace,
+    );
   }
 
   private waitForApproval(
@@ -1442,6 +1706,31 @@ export class AgentService {
       .checkpoints.filter((item) => item.runId === runId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     return checkpoints[0] ?? null;
+  }
+
+  private traceOptionsForIncident(incidentId: string): {
+    parentEventId: string | null;
+    attemptIndex: number;
+  } {
+    const incident = this.store
+      .snapshot()
+      .incidents.find((item) => item.id === incidentId);
+    const failingEvent = this.store
+      .snapshot()
+      .events.find((event) => event.id === incident?.eventId);
+    return {
+      parentEventId: incident?.eventId ?? null,
+      attemptIndex: failingEvent?.attemptIndex ?? 0,
+    };
+  }
+
+  private runSpanId(runId: string): string | null {
+    return (
+      this.store
+        .snapshot()
+        .events.find((event) => event.runId === runId && event.type === "RUN_STARTED")
+        ?.id ?? null
+    );
   }
 
   private async failRun(

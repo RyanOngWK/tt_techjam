@@ -34,35 +34,63 @@ Volcengine ECS.
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
-- **AgentGuard:** run event timeline, incidents, checkpoints, token budget + HITL approval, simulated failure injection, and policy-driven retry / restart-resume
+- **AgentGuard:** Glass Box span tree (category, actor, parent, attempt, qualified duration), incidents, checkpoints, token budget + HITL approval, real container-kill crash injection, and policy-driven retry / restart-resume
 
-## AgentGuard
+## AgentGuard — Glass Box (trace and audit)
+
+**Track: Glass Box — trace and audit.**
+
+### What we've built
+
+AgentGuard is implemented end to end across the control plane, Runtime, data,
+and UI, exactly along the brief's "Trace, Audit, and Observability" middleware
+direction:
+
+- **Span tree, not a log stream** — every `TraceEvent` is a span with `category`,
+  `actor`, `parentEventId`, `attemptIndex`, and a duration that records its
+  measurement source. `runId` is the trace id; `eventId` is the span id. No
+  synthetic telemetry: per-turn coverage comes from the measured `TURN` span.
+- **Redaction before persistence** — configured Ark / API-auth credential values
+  are registered before store init and scrubbed by literal value on top of
+  pattern matching; previews redact before truncation. Asserted by
+  `redaction-evidence.test.ts`.
+- **Real runner instrumentation** — Codex JSONL items become model/tool spans
+  with real exit codes; non-zero command exits turn spans red organically.
+- **Queryable trace API** — `GET /api/runs` (newest-first, per-run summaries)
+  and `GET /api/runs/:id/events` with category / actor / status / since filters,
+  `tree=true`, and JSON evidence export; unknown runs return 404.
+- **Trace UI** — run list tab, nested span tree with actor badges and qualified
+  durations, expandable span detail, filter chips that preserve hierarchy, and
+  one-click jump to the failing step.
+- **Closed-loop recovery** — failure detection, deterministic diagnosis,
+  checkpointed retry / restart-resume, and `RECOVERY_VERIFIED` all nest as
+  children of the failing span; `runtime_crash` performs a real container kill
+  so the error span carries a genuine exit code.
+- **Proactive budget control** — tiered pre-turn prompt wrap/gate, mid-turn
+  projection cancel driven by accumulated span data, deterministic
+  compress-on-recovery (soft automatic, hard HITL), and persisted global
+  policy settings (`GET/PATCH /api/agentguard/settings`).
 
 ### Problem
 
-Agent runs fail opaquely: a crash or timeout ends the turn, operators restart from scratch, and observability is a dashboard rather than a recovery sensor.
+A Run is a tree of model calls, tool calls, and policy decisions, but the platform stored it as a flat list. Failing steps were unlocatable, retries unattributable, and observability sat beside recovery instead of driving it.
 
 ### Rationale
 
-AgentGuard keeps recovery deterministic (fixed policies, not LLM-invented fixes) and uses structured traces as the feedback loop for detection and verification.
+The trace is a sensor, not a dashboard. Deterministic policies read spans and write their decisions back as nested spans under the step that triggered them, so diagnosis, recovery, and verification are evidence in the same tree.
 
 ### Design summary
 
-- **Trace** — persist redacted `TraceEvent`s (`runId` = trace id, `eventId` = span id); export via `?format=download`
-- **Detect** — classify `runtime_crash` / `tool_timeout` / `budget_exceeded`
-- **Recover** — `retry` or `restart_resume` from workspace + `codexThreadId` checkpoints (both restore)
-- **Budget / HITL** — soft token budget; second crash or budget trip can pause for Approve / Abort
-- **Verify** — emit `RECOVERY_VERIFIED` after a successful recovered turn
-- Architecture: [docs/agentguard-architecture.md](docs/agentguard-architecture.md)
+Every span carries a **category**, **actor**, **parent**, **attempt index**, and a **duration with its measurement source**. `runId` is the trace id; `eventId` is the span id.
 
-### Demo steps
+- **Span collector** — `startSpan` / `endSpan`, assign taxonomy, redact before persist
+- **Tree builder** — reconstruct a single-root tree (`RUN_STARTED`) from the stored list
+- **Item extractor** — Codex JSONL items become model/tool spans with real exit codes
+- **Consumers** — detector, diagnosis, recovery, and budget read the stream and nest their decisions under the triggering span
 
-1. Create/select an Agent; send a real Playground task.
-2. Watch the AgentGuard timeline (model/tool spans, checkpoints, budget, usage when present).
-3. Click **Inject crash** (or timeout) while the run is active.
-4. Confirm incident → checkpoint restore → `RECOVERY_VERIFIED` → run completes.
-5. Optionally **Inject budget** or a second crash → Approve / Abort.
-6. Export JSON evidence; send a follow-up message to show post-recovery controllability.
+Architecture: [docs/agentguard-architecture.md](docs/agentguard-architecture.md)
+
+![AgentGuard span collector, consumers, and trust boundary](docs/assets/agentguard-architecture.png)
 
 ### Tests
 
@@ -70,15 +98,24 @@ AgentGuard keeps recovery deterministic (fixed policies, not LLM-invented fixes)
 npm run check
 ```
 
-Includes AgentGuard unit and integration tests under `apps/server/src/agentguard/`.
+Includes AgentGuard unit and integration tests under `apps/server/src/agentguard/`. The redaction evidence test (`redaction-evidence.test.ts`) serializes a completed run that leaked `ARK_API_KEY` into command, output, and error text and asserts the secret never appears.
 
 ### Limitations
 
-- Single-node JSON persistence; no recovery across control-plane restarts
-- Failure injection is simulated in `AgentService` (cancel + synthetic incident), not a hard container kill
-- Alerts are UI badges only
-- Trace retention is local JSON only (sensitive-trace threat: keep demos on non-production data)
-- Fixed failure taxonomy; not general autonomous repair
+- Single-node JSON persistence; not multi-tenant or HA.
+- No recovery across control-plane process restart.
+- Alerts are UI-only.
+- Classification covers a fixed failure taxonomy, not arbitrary faults.
+- Checkpoints are best-effort file copies, not transactional filesystem snapshots.
+- Not a replacement for production APM or distributed tracing.
+- Trace/span IDs are mapped from `runId`/`eventId` rather than OpenTelemetry exporters.
+- Mid-turn budget projection is heuristic; it can false-positive or false-negative vs true Ark usage.
+- Soft compress does not shrink the underlying Codex thread history; it only wraps the next user prompt.
+- **Model and tool span durations are inter-item deltas, not measured spans**, because Codex reports only item completion. Durations marked `measured` (turn, recovery, checkpoint) are the load-bearing numbers.
+- **Byte-based budget projection is weak.** `streamBytes` is derived from redacted metadata previews capped at 200 characters, so the byte term contributes little; projection is effectively driven by span counts.
+- The span tree has no search, virtualization, or retention policy; it is sized for hackathon-scale runs.
+- The audit trail is not tamper-evident. Hash chaining and signed exports were deliberately cut.
+- **`runtime_crash` performs a real container kill** (`docker kill` / force-remove) when the container runner is active, so the resulting span carries a genuine non-zero exit. The local process runner falls back to simulated injection.
 
 ## Requirements
 

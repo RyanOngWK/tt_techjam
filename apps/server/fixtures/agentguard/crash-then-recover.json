@@ -1,15 +1,28 @@
 {
   "events": [
     "RUN_STARTED",
+    "TURN",
     "MODEL_CALL",
     "CHECKPOINT_CREATED",
     "ERROR",
     "INCIDENT_OPENED",
     "DIAGNOSIS_ISSUED",
     "RECOVERY_STARTED",
+    "CHECKPOINT_RESTORED",
     "RECOVERY_COMPLETED",
     "RECOVERY_VERIFIED",
     "DIAGNOSIS_VERDICT",
     "RUN_COMPLETED"
-  ]
+  ],
+  "shape": {
+    "rootType": "RUN_STARTED",
+    "requiredCategories": [
+      "orchestration",
+      "model_call",
+      "checkpoint",
+      "policy_decision",
+      "recovery"
+    ],
+    "nestedUnderFailingSpan": ["INCIDENT_OPENED", "RECOVERY_STARTED", "CHECKPOINT_RESTORED"]
+  }
 }

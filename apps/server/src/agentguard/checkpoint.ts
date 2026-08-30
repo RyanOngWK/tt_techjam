@@ -5,6 +5,39 @@ import type { Checkpoint } from "../types.js";
 
 const MAX_CHECKPOINTS_PER_RUN = 5;
 
+/** Volatile or regenerable paths — copying these races with npm/Codex and can crash fs.cp. */
+const CHECKPOINT_SKIP_SEGMENTS = new Set([
+  "node_modules",
+  ".git",
+  ".cache",
+  "dist",
+  "build",
+  "coverage",
+  "__pycache__",
+  ".venv",
+  ".turbo",
+]);
+
+export function shouldIncludeInCheckpointSnapshot(
+  workspaceRoot: string,
+  entryPath: string,
+): boolean {
+  const relative = path.relative(workspaceRoot, entryPath);
+  if (!relative || relative.startsWith("..")) {
+    return true;
+  }
+  for (const segment of relative.split(path.sep)) {
+    if (CHECKPOINT_SKIP_SEGMENTS.has(segment)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function checkpointCopyFilter(workspaceRoot: string) {
+  return (source: string) => shouldIncludeInCheckpointSnapshot(workspaceRoot, source);
+}
+
 export function checkpointRoot(dataDirectory: string): string {
   return path.join(dataDirectory, "checkpoints");
 }
@@ -28,6 +61,7 @@ export async function createWorkspaceCheckpoint(input: {
     recursive: true,
     force: true,
     errorOnExist: false,
+    filter: checkpointCopyFilter(input.workspacePath),
   });
   return {
     id,
@@ -49,6 +83,7 @@ export async function restoreWorkspaceCheckpoint(input: {
   await cp(input.checkpoint.workspaceSnapshotRef, input.workspacePath, {
     recursive: true,
     force: true,
+    filter: checkpointCopyFilter(input.workspacePath),
   });
 }
 
