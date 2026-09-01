@@ -1,12 +1,20 @@
-# Volc Agent Launchpad
+# AgentGuard
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
+Volc Agent Launchpad is a hackathon-built Agent platform whose real product is
+**AgentGuard**, the reliability middleware wrapped around it. AgentGuard turns
+every Agent Run into a Glass Box: a single-root span tree that captures what the
+Agent did, why it failed, and how it recovered, with no synthetic telemetry.
 
-**Middleware story: AgentGuard** — team-designed reliability middleware
-(structured observability + deterministic failure recovery). See the
-[AgentGuard PRD](docs/AgentGuard%20PRD.md) and
+Every span carries a **category**, **actor**, **parent**, **attempt index**, and a
+**duration with its measurement source**. On top of that tree, AgentGuard runs
+deterministic failure detection, diagnosis, checkpointed recovery, and proactive
+budget control, each writing its decisions back as spans nested under the step
+that triggered them. The result is observability that drives recovery instead of
+sitting beside it.
+
+The middleware is demonstrated on a minimal platform: Agent CRUD, a browser
+Playground, persistent workspaces, and Codex CLI backed by the Volcengine Ark
+Responses API. See the [AgentGuard PRD](docs/AgentGuard%20PRD.md) and
 [AgentGuard TRD](docs/AgentGuard%20TRD.md).
 
 > [!WARNING]
