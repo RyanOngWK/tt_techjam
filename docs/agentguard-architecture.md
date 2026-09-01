@@ -99,6 +99,24 @@ distinction the official brief draws between middleware and a dashboard.
 | HITL | Approval spans attribute the decision to actor `human` |
 | Query and export | Filter by category / actor / status / time; `tree=true`; `?format=download` |
 
+## LLM Wiki (large-task memory)
+
+Every created workspace ships with an **LLM-wiki workflow** embedded in the
+platform-generated `AGENTS.md`. When a conversation task is deemed large (a whole
+app, a multi-component feature, or work spanning many turns/sessions), the Agent
+scaffolds and maintains a `wiki/` directory to manage the code:
+
+- `wiki/index.md` — catalog of every page with a one-line summary
+- `wiki/log.md` — append-only timeline (`## [YYYY-MM-DD] operation | Title`)
+- `wiki/*.md` — concise interlinked overview, architecture, component, and
+  decision pages, updated as the work proceeds
+
+Stored under the Agent workspace at `workspaces/<agent-id>/wiki/`. Source code
+stays the source of truth; the wiki is advisory. Heavier upkeep (scaffold,
+ingest, query, lint) is delegated to a `@wikier` custom agent pre-seeded at
+`.codex/agents/wikier.toml`, keeping the main thread on coding. Full architecture
+context lives in [ARCHITECTURE.md](ARCHITECTURE.md#llm-wiki).
+
 ## Demo beats
 
 1. Real task → span tree with durations, commands, exit codes, per-turn usage
