@@ -137,5 +137,21 @@ export const api = {
     request<AgentGuardSettingsResponse>("/api/agentguard/settings/reset", {
       method: "POST",
     }),
-  exportEventsUrl: (runId: string) => "/api/runs/" + runId + "/events?format=download",
+  exportEvents: async (runId: string): Promise<string> => {
+    const response = await fetch(
+      "/api/runs/" + runId + "/events?format=download",
+      { headers: authToken ? { Authorization: "Bearer " + authToken } : {} },
+    );
+    if (!response.ok) {
+      let message = "Export failed";
+      try {
+        const data = (await response.json()) as { error?: string };
+        message = data.error ?? message;
+      } catch {
+        /* ignore malformed body */
+      }
+      throw new ApiError(message, response.status);
+    }
+    return response.text();
+  },
 };

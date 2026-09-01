@@ -624,6 +624,25 @@ export default function App() {
     }
   };
 
+  const exportRunEvents = async () => {
+    if (!activeRun) return;
+    setError(null);
+    try {
+      const body = await api.exportEvents(activeRun.id);
+      const blob = new Blob([body], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `run-${activeRun.id}-events.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   const failingEventId = useMemo(() => {
     const firstError = traceEvents.find((event) => event.status === "error");
     if (firstError) return firstError.id;
@@ -1199,13 +1218,13 @@ export default function App() {
                 >
                   Inject projected
                 </button>
-                <a
+                <button
+                  type="button"
                   className="button button-ghost"
-                  href={api.exportEventsUrl(activeRun.id)}
-                  download={`run-${activeRun.id}-events.json`}
+                  onClick={() => void exportRunEvents()}
                 >
                   Export JSON
-                </a>
+                </button>
               </div>
               <button
                 type="button"

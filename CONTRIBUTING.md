@@ -30,4 +30,3 @@ docker compose config
 - Use GitHub Flavored Markdown and relative repository links.
 - Never commit credentials, local state, workspaces, build output, or Terraform
   state.
-- Report security issues according to [SECURITY.md](SECURITY.md).

@@ -30,7 +30,8 @@ serves the compiled Web UI. The token is not user identity or authorization.
 ### AgentService
 
 Coordinates lifecycle state, persistence, workspaces, and Runs. One Agent can
-have only one active Run.
+have only one active Run. Workspaces are seeded and managed by
+`WorkspaceManager`, which also writes the platform-managed `AGENTS.md`.
 
 ```text
 ready -> busy -> ready
@@ -41,11 +42,33 @@ stopped  error
 
 Interrupted Runs become `cancelled` after a restart.
 
+### LLM Wiki
+
+Every created workspace ships with an **LLM-wiki workflow** built into the
+platform-generated `AGENTS.md`. When a conversation task is deemed large —
+building an entire app, a multi-component feature, or work that will span many
+turns or sessions — the Agent scaffolds and maintains a `wiki/` directory in its
+workspace to manage the code:
+
+- `wiki/index.md` — catalog of every page with a one-line summary
+- `wiki/log.md` — append-only timeline, entries prefixed `## [YYYY-MM-DD] operation | Title`
+- `wiki/*.md` — concise interlinked overview, architecture, component, and
+  decision pages, updated as the work proceeds
+
+The wiki is generated and maintained by the Agent; source code stays the source
+of truth and wiki pages are never authoritative over it. Heavier upkeep
+(scaffold, ingest, query, lint) can be delegated to a `@wikier` custom agent that
+`WorkspaceManager` pre-seeds at `.codex/agents/wikier.toml` in each workspace, so
+the main thread stays focused on coding.
+
 ### Storage
 
 ```text
 data/launchpad.json       Agent, message, and Run metadata
 workspaces/AgentID/       Agent-created files
+workspaces/AgentID/wiki/  LLM Wiki (index.md, log.md, pages) when a task is large
+workspaces/AgentID/AGENTS.md   Platform-managed instructions (incl. LLM Wiki)
+workspaces/AgentID/.codex/agents/wikier.toml   Pre-seeded wiki-maintenance subagent
 workspaces/.deleted/      Archived deleted workspaces
 codex-home/               Codex configuration and sessions
 ```
